@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: uopt
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: uopt/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Build runtime bundle
+        run: npm run build
+      - name: Verify generated bundle
+        run: npm run verify
+      - name: Package release directory
+        run: npm run package
+      - name: Verify install payload
+        run: |
+          test -f dist/uopt/main.js
+          test -f dist/uopt/manifest.json
+          test -f dist/uopt/styles.css
+          test "$(find dist/uopt -maxdepth 1 -type f | wc -l)" -eq 3

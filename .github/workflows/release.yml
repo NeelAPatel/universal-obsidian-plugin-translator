@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: uopt
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: uopt/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Read and verify project version
+        shell: bash
+        run: |
+          PROJECT_VERSION=$(node -p "require('../PROJECT.json').version")
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          test "$PROJECT_VERSION" = "$MANIFEST_VERSION"
+          test "$PROJECT_VERSION" = "$PACKAGE_VERSION"
+          echo "PROJECT_VERSION=$PROJECT_VERSION" >> "$GITHUB_ENV"
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Verify
+        run: npm run verify
+      - name: Package
+        run: npm run package
+      - name: Create install ZIP
+        run: (cd dist && zip -r uopt.zip uopt)
+      - name: Publish release if this version is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$PROJECT_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $PROJECT_VERSION already exists; nothing to publish."
+            exit 0
+          fi
+          gh release create "$PROJECT_VERSION" \
+            main.js manifest.json styles.css dist/uopt.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "v$PROJECT_VERSION" \
+            --generate-notes
