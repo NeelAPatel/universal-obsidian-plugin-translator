@@ -38,6 +38,29 @@ function memorySeed(source, candidates, memory) {
   return seed;
 }
 
+function translationMemoryEntries(source, candidates, translations) {
+  if (!(translations instanceof Map)) return [];
+  return candidates
+    .filter(candidate => translations.has(candidate.id))
+    .map(candidate => ({
+      key:memoryKey(source,candidate),
+      source:candidate.text,
+      kind:candidate.kind,
+      translation:translations.get(candidate.id)
+    }));
+}
+
+function mergeTranslationMemory(existing, additions) {
+  const merged = new Map();
+  for (const item of Array.isArray(existing) ? existing : []) {
+    if (item && item.key && item.translation) merged.set(item.key,item);
+  }
+  for (const item of Array.isArray(additions) ? additions : []) {
+    if (item && item.key && item.translation) merged.set(item.key,item);
+  }
+  return [...merged.values()];
+}
+
 class UoptService {
   constructor({ pluginsRoot, selfId='uopt', snapshotRoot, state, repositoryContextFetcher=null }) {
     this.pluginsRoot = pluginsRoot;
@@ -246,9 +269,7 @@ class UoptService {
           error.uoptStage = 'filesystem';
           throw error;
         }
-        const translationMemory = candidates
-          .filter(candidate => result.translations.has(candidate.id))
-          .map(candidate => ({key:memoryKey(source,candidate),source:candidate.text,kind:candidate.kind,translation:result.translations.get(candidate.id)}));
+        const translationMemory = translationMemoryEntries(source, candidates, result.translations);
         Object.assign(file, {
           originalHash:sourceHash,
           translatedHash,
@@ -265,6 +286,10 @@ class UoptService {
         translatedFiles++;
         translatedStrings += result.translatedCount;
       } catch (error) {
+        if (source && candidates.length && error && error.uoptPartialTranslations instanceof Map) {
+          const recoveredMemory = translationMemoryEntries(source, candidates, error.uoptPartialTranslations);
+          if (recoveredMemory.length) file.translationMemory = mergeTranslationMemory(file.translationMemory, recoveredMemory);
+        }
         const failureStage = error && error.uoptStage;
         const batchMeta = failureStage === 'provider' ? (error && error.uoptBatch || currentBatch || {}) : {};
         const diagnostic = createFailureDiagnostic(error, {
@@ -290,4 +315,4 @@ class UoptService {
   }
 }
 
-module.exports = { UoptService, defaultState, memoryKey, memorySeed };
+module.exports = { UoptService, defaultState, memoryKey, memorySeed, translationMemoryEntries, mergeTranslationMemory };
