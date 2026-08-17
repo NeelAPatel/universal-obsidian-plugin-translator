@@ -23,7 +23,7 @@ function classifyFailure(error, context={}) {
     return {category:'Filesystem', stage:'Filesystem', message};
   }
   if (stage === 'provider' || context.provider) {
-    if (/valid json|json parse|unexpected token.*json|structured response|schema/.test(lower)) {
+    if (/valid json|json parse|unexpected token.*json|structured response|schema|line protocol|candidate\(s\) unresolved|malformed.*response/.test(lower)) {
       return {category:'Provider format', stage:'Provider response parsing', message};
     }
     if (/empty response|returned no text|no text/.test(lower)) {
