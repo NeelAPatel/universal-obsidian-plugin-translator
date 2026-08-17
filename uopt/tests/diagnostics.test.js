@@ -11,6 +11,7 @@ function err(message, code) {
 
 test('classifies provider format, response, connection, validation, file-change, filesystem, and unknown failures', () => {
   assert.equal(classifyFailure(err('Translation provider did not return valid JSON'), {stage:'provider'}).category, 'Provider format');
+  assert.equal(classifyFailure(err('Ollama line protocol left 1 candidate(s) unresolved after 3 attempts'), {stage:'provider'}).category, 'Provider format');
   assert.equal(classifyFailure(err('Translation provider returned an empty response'), {stage:'provider'}).category, 'Provider response');
   assert.equal(classifyFailure(err('connect ECONNREFUSED 127.0.0.1:11434','ECONNREFUSED'), {stage:'provider'}).category, 'Provider connection');
   assert.equal(classifyFailure(err('Validation failed for main.js: Unexpected token'), {stage:'validation'}).category, 'Translation validation');
