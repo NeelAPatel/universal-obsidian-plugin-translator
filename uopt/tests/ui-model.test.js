@@ -20,3 +20,8 @@ test('current plugin reports translated current', () => {
   const plugin = {lastScan:'x',everTranslated:true,files:{'a.js':{state:'translated-current',approved:true,candidateCount:0}}};
   assert.equal(pluginStatus(plugin).label,'Translated / current');
 });
+
+test('translation failure takes priority in plugin status', () => {
+  const plugin = {lastScan:'x',files:{'a.js':{state:'updated-approved',approved:true,lastFailure:{category:'Provider format'}}}};
+  assert.equal(pluginStatus(plugin).label,'Translation failed');
+});

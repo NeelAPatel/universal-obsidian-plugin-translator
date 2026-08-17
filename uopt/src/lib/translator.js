@@ -29,7 +29,16 @@ async function translateSource({ source, candidates, pluginContext, provider, ma
   const batches = batchCandidates(eligible, maxBatchChars);
   for (let i = 0; i < batches.length; i++) {
     if (onBatch) await onBatch(i + 1, batches.length, batches[i]);
-    const result = await provider.translate(pluginContext, batches[i]);
+    let result;
+    try {
+      result = await provider.translate(pluginContext, batches[i]);
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        error.uoptStage = error.uoptStage || 'provider';
+        error.uoptBatch = { batch:i + 1, totalBatches:batches.length, candidateCount:batches[i].length };
+      }
+      throw error;
+    }
     for (const [id, value] of result.entries()) translations.set(id, value);
   }
   return {

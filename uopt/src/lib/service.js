@@ -8,6 +8,7 @@ const { translateSource } = require('./translator');
 const { validateContent } = require('./validation');
 const { SnapshotStore } = require('./snapshots');
 const { sha256 } = require('./hash');
+const { createFailureDiagnostic } = require('./diagnostics');
 
 function defaultState() {
   return {
@@ -164,18 +165,37 @@ class UoptService {
   async translatePlugin(pluginId, provider, options={}) {
     const plugin = this.state.plugins[pluginId];
     if (!plugin) throw new Error('Scan this plugin before translating it');
-    const targetFiles = this.eligibleFiles(pluginId);
+    const onlyFiles = Array.isArray(options.onlyFiles) ? new Set(options.onlyFiles) : null;
+    const targetFiles = this.eligibleFiles(pluginId).filter(file => !onlyFiles || onlyFiles.has(file.path));
     let translatedFiles = 0;
     let translatedStrings = 0;
     const errors = [];
+    const providerName = provider && (provider.providerName || provider.constructor && provider.constructor.name) || 'Unknown';
+    const providerModel = provider && provider.model || '';
+
     for (let fileIndex=0; fileIndex<targetFiles.length; fileIndex++) {
       const file = targetFiles[fileIndex];
       const absolute = path.join(this.pluginsRoot, pluginId, ...file.path.split('/'));
-      const source = await fs.readFile(absolute,'utf8');
-      const sourceHash = sha256(source);
-      const candidates = extractCandidates(file.path, source);
-      const originalSnapshot = await this.snapshotStore.save(pluginId, file.path, 'original', sourceHash, source);
+      let source = '';
+      let sourceHash = '';
+      let candidates = [];
+      let currentBatch = null;
       try {
+        try {
+          source = await fs.readFile(absolute,'utf8');
+          sourceHash = sha256(source);
+        } catch (error) {
+          error.uoptStage = 'filesystem';
+          throw error;
+        }
+        candidates = extractCandidates(file.path, source);
+        let originalSnapshot;
+        try {
+          originalSnapshot = await this.snapshotStore.save(pluginId, file.path, 'original', sourceHash, source);
+        } catch (error) {
+          error.uoptStage = 'filesystem';
+          throw error;
+        }
         const seedTranslations = memorySeed(source, candidates, file.translationMemory);
         const result = await translateSource({
           source,
@@ -184,12 +204,29 @@ class UoptService {
           provider,
           seedTranslations,
           maxBatchChars:options.maxBatchChars || 14000,
-          onBatch: options.onBatch ? (batch,total,items)=>options.onBatch({pluginId,file:file.path,fileIndex:fileIndex+1,fileTotal:targetFiles.length,batch,total,items}) : undefined
+          onBatch: async (batch,total,items) => {
+            currentBatch = {batch,totalBatches:total,candidateCount:items.length};
+            if (options.onBatch) await options.onBatch({pluginId,file:file.path,fileIndex:fileIndex+1,fileTotal:targetFiles.length,batch,total,items});
+          }
         });
         const validation = validateContent(file.path, result.content);
-        if (!validation.ok) throw new Error(`Validation failed for ${file.path}: ${validation.error}`);
-        const currentBeforeWrite = await fs.readFile(absolute, 'utf8');
-        if (sha256(currentBeforeWrite) !== sourceHash) throw new Error(`File changed during translation: ${file.path}. UOPT did not overwrite it.`);
+        if (!validation.ok) {
+          const error = new Error(`Validation failed for ${file.path}: ${validation.error}`);
+          error.uoptStage = 'validation';
+          throw error;
+        }
+        let currentBeforeWrite;
+        try {
+          currentBeforeWrite = await fs.readFile(absolute, 'utf8');
+        } catch (error) {
+          error.uoptStage = 'filesystem';
+          throw error;
+        }
+        if (sha256(currentBeforeWrite) !== sourceHash) {
+          const error = new Error(`File changed during translation: ${file.path}. UOPT did not overwrite it.`);
+          error.uoptStage = 'file-changed';
+          throw error;
+        }
         const translatedHash = sha256(result.content);
         if (result.content !== source) {
           const tempPath = `${absolute}.uopt-tmp-${process.pid}-${Date.now()}`;
@@ -197,11 +234,18 @@ class UoptService {
             await fs.writeFile(tempPath, result.content, 'utf8');
             await fs.rename(tempPath, absolute);
           } catch (writeError) {
+            writeError.uoptStage = 'filesystem';
             try { await fs.rm(tempPath, {force:true}); } catch (_) {}
             throw writeError;
           }
         }
-        const translatedSnapshot = await this.snapshotStore.save(pluginId, file.path, 'translated', translatedHash, result.content);
+        let translatedSnapshot;
+        try {
+          translatedSnapshot = await this.snapshotStore.save(pluginId, file.path, 'translated', translatedHash, result.content);
+        } catch (error) {
+          error.uoptStage = 'filesystem';
+          throw error;
+        }
         const translationMemory = candidates
           .filter(candidate => result.translations.has(candidate.id))
           .map(candidate => ({key:memoryKey(source,candidate),source:candidate.text,kind:candidate.kind,translation:result.translations.get(candidate.id)}));
@@ -215,13 +259,27 @@ class UoptService {
           approved:true,
           state:'translated-current',
           lastTranslated:new Date().toISOString(),
-          lastError:null
+          lastError:null,
+          lastFailure:null
         });
         translatedFiles++;
         translatedStrings += result.translatedCount;
       } catch (error) {
-        file.lastError = error && error.message ? error.message : String(error);
-        errors.push({file:file.path,error:file.lastError});
+        const failureStage = error && error.uoptStage;
+        const batchMeta = failureStage === 'provider' ? (error && error.uoptBatch || currentBatch || {}) : {};
+        const diagnostic = createFailureDiagnostic(error, {
+          stage:failureStage,
+          pluginId,
+          file:file.path,
+          provider:providerName,
+          model:providerModel,
+          batch:batchMeta.batch,
+          totalBatches:batchMeta.totalBatches,
+          candidateCount:batchMeta.candidateCount
+        });
+        file.lastError = diagnostic.message;
+        file.lastFailure = diagnostic;
+        errors.push({file:file.path,error:diagnostic.message,diagnostic});
       }
     }
     if (translatedFiles > 0) {

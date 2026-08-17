@@ -169,6 +169,8 @@ async function scanPluginDirectory({ pluginDir, pluginId, previous, maxFileBytes
       translatedSnapshot:prev && prev.translatedSnapshot || null,
       translationMemory:prev && Array.isArray(prev.translationMemory) ? prev.translationMemory : [],
       lastTranslated:prev && prev.lastTranslated || null,
+      lastError:hasForeign && !ignoredReason && prev && prev.lastError || null,
+      lastFailure:hasForeign && !ignoredReason && prev && prev.lastFailure || null,
       lastScan:new Date().toISOString()
     });
   }
