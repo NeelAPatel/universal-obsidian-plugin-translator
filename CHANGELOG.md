@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3
+
+- Reworked settings into the approved single-column flow: global actions → 2×2 Summary → Plugin Summary → Plugin Detail → Selected File Preview → Model Settings → Activity.
+- Kept one search bar and sortable columns for plugin/file tables while removing per-column filter controls.
+- Kept plugin and file tables capped at five visible rows before scrolling.
+- Moved file preview into a dedicated always-visible section directly after Plugin Detail.
+- Added syntax-highlighted read-only source previews for common plugin file types.
+- Added Markdown **Readable / Source** preview modes using Obsidian's native Markdown renderer.
+- Preserved independent Markdown Source/Readable scroll positions, with proportional positioning on the first mode switch.
+- Hid ignored localization/support files by default with an explicit **Show ignored** control.
+
 ## 0.1.2
 
 - Reworked the settings page into a full-width responsive flow: Summary → Plugin Summary → Plugin Detail → Model Settings → Activity.

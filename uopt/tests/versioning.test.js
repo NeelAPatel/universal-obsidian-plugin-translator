@@ -6,7 +6,7 @@ const test = require('node:test');
 const root = path.resolve(__dirname,'..');
 const repoRoot = path.resolve(root,'..');
 
-test('PROJECT.json is the canonical UOPT identity and all version metadata agrees on 0.1.2', () => {
+test('PROJECT.json is the canonical UOPT identity and all version metadata agrees on 0.1.3', () => {
   const project = JSON.parse(fs.readFileSync(path.join(repoRoot,'PROJECT.json'),'utf8'));
   const pkg = JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
   const manifest = JSON.parse(fs.readFileSync(path.join(root,'manifest.json'),'utf8'));
@@ -16,7 +16,7 @@ test('PROJECT.json is the canonical UOPT identity and all version metadata agree
   assert.equal(project.pluginId, 'uopt');
   assert.equal(project.repository, 'NeelAPatel/universal-obsidian-plugin-translator');
   assert.equal(project.projectDirectory, 'uopt');
-  assert.equal(project.version, '0.1.2');
+  assert.equal(project.version, '0.1.3');
   assert.equal(pkg.version, project.version);
   assert.equal(manifest.version, project.version);
   assert.equal(manifest.id, project.pluginId);

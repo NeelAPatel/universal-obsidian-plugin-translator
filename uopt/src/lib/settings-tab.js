@@ -1,8 +1,9 @@
 'use strict';
 
-const { PluginSettingTab, Setting, Notice } = require('obsidian');
+const { PluginSettingTab, Setting, Notice, MarkdownRenderer, Component } = require('obsidian');
 const { filterSortRows } = require('./scanner');
 const { pluginStatus, pluginNeedsCount, pluginBlockedCount, formatTime } = require('./ui-model');
+const { isMarkdownPath, previewLanguageForPath, tokenizeSource, proportionalScrollTop } = require('./preview');
 
 function el(parent, tag, cls, text) {
   const node = parent.createEl ? parent.createEl(tag, {cls, text}) : document.createElement(tag);
@@ -69,11 +70,14 @@ class UoptSettingTab extends PluginSettingTab {
     this.previewRequestToken = 0;
     this.pluginQuery = '';
     this.fileQuery = '';
-    this.pluginFilters = {name:'',version:'',status:'',needs:'',lastScan:'',lastTranslate:'',bulk:''};
-    this.fileFilters = {path:'',type:'',languages:'',state:'',candidates:'',allowed:''};
     this.pluginSort = {key:'name',dir:'asc'};
     this.fileSort = {key:'path',dir:'asc'};
     this.pendingFocus = null;
+    this.showIgnoredFiles = false;
+    this.previewModeByFile = new Map();
+    this.previewScroll = new Map();
+    this.previewTransition = null;
+    this.previewRenderComponent = null;
     this.discoveryStarted = false;
     this.discoveryLoaded = false;
     this.refreshQueued = false;
@@ -120,6 +124,10 @@ class UoptSettingTab extends PluginSettingTab {
 
   display() {
     const {containerEl} = this;
+    if (this.previewRenderComponent) {
+      this.previewRenderComponent.unload();
+      this.previewRenderComponent = null;
+    }
     containerEl.empty();
     if (containerEl.classList) containerEl.classList.add('uopt-settings-container');
     const root = el(containerEl,'div','uopt-root');
@@ -135,9 +143,11 @@ class UoptSettingTab extends PluginSettingTab {
     }
 
     const flow = el(root,'main','uopt-flow');
+    this.renderGlobalActions(flow);
     this.renderSummary(flow);
     this.renderPluginTable(flow);
     this.renderPluginDetail(flow);
+    this.renderSelectedFilePreview(flow);
     this.renderModelCard(flow);
     this.renderActivityCard(flow);
   }
@@ -145,7 +155,7 @@ class UoptSettingTab extends PluginSettingTab {
   renderModelCard(parent) {
     const card = el(parent,'section','uopt-card uopt-model-card');
     const head = el(card,'div','uopt-card-head');
-    el(head,'div','uopt-card-title','Model settings');
+    el(head,'div','uopt-card-title','Model Settings');
     el(head,'div','uopt-card-subtitle','Used only when Translate runs');
     const body = el(card,'div','uopt-card-body');
 
@@ -223,13 +233,8 @@ class UoptSettingTab extends PluginSettingTab {
     }
   }
 
-  renderSummary(parent) {
-    const card = el(parent,'section','uopt-card uopt-summary-card');
-    const head = el(card,'div','uopt-card-head');
-    el(head,'div','uopt-card-title','Summary');
-    el(head,'div','uopt-card-subtitle','Scan is local and read-only. Translate only processes approved work.');
-    const body = el(card,'div','uopt-card-body');
-    const toolbar = el(body,'div','uopt-toolbar');
+  renderGlobalActions(parent) {
+    const toolbar = el(parent,'div','uopt-toolbar uopt-global-actions');
     const scanAll = button(toolbar,'Scan all plugins','mod-cta uopt-button',async(_e,b)=>{
       b.disabled=true;
       try { await this.plugin.runScanAll(); }
@@ -245,6 +250,14 @@ class UoptSettingTab extends PluginSettingTab {
     scanAll.disabled=this.plugin.busy;
     translateAll.disabled=this.plugin.busy;
     el(toolbar,'div','uopt-idle-status',this.plugin.busy ? 'Working…' : 'Idle · 0 background activity');
+  }
+
+  renderSummary(parent) {
+    const card = el(parent,'section','uopt-card uopt-summary-card');
+    const head = el(card,'div','uopt-card-head');
+    el(head,'div','uopt-card-title','Summary');
+    el(head,'div','uopt-card-subtitle','Current state from the latest scan. Scan is local and read-only.');
+    const body = el(card,'div','uopt-card-body');
     this.renderMetrics(body);
   }
 
@@ -259,7 +272,7 @@ class UoptSettingTab extends PluginSettingTab {
       ['Installed',plugins.length,'Community plugins'],
       ['Need translation',need,'After latest scans'],
       ['Approval required',blocked,'New/unapproved files'],
-      ['Translate all ready',eligible,'Plugins with approved work']
+      ['Ready',eligible,'Approved translation work']
     ]) {
       const card=el(grid,'div','uopt-metric');
       el(card,'div','uopt-metric-label',label);
@@ -271,7 +284,7 @@ class UoptSettingTab extends PluginSettingTab {
   renderPluginTable(parent) {
     const card = el(parent,'section','uopt-card');
     const head = el(card,'div','uopt-card-head');
-    el(head,'div','uopt-card-title','Plugin summary');
+    el(head,'div','uopt-card-title','Plugin Summary');
     el(head,'div','uopt-card-subtitle','Select a row for file-level details. New files are never approved automatically.');
     const body = el(card,'div','uopt-card-body');
     const searchRow = el(body,'div','uopt-search-row');
@@ -290,7 +303,7 @@ class UoptSettingTab extends PluginSettingTab {
         bulk:p.includeInTranslateAll!==false?'Enabled':'Excluded',record:p
       };
     });
-    const rows = filterSortRows(raw,this.pluginQuery,this.pluginSort.key,this.pluginSort.dir,this.pluginFilters);
+    const rows = filterSortRows(raw,this.pluginQuery,this.pluginSort.key,this.pluginSort.dir);
     const scroll = el(body,'div','uopt-table-scroll uopt-five-rows');
     const table = el(scroll,'table','uopt-table');
     const thead=el(table,'thead'); const hr=el(thead,'tr','uopt-sort-row');
@@ -303,10 +316,6 @@ class UoptSettingTab extends PluginSettingTab {
     createSortHeader(hr,'Last translate','lastTranslate',this.pluginSort,sort);
     createSortHeader(hr,'Translate all','bulk',this.pluginSort,sort);
     el(hr,'th','uopt-actions-head','Actions');
-    this.renderColumnFilters(thead,[
-      ['name','Plugin'],['version','Version'],['status','Status'],['needs','Needs'],
-      ['lastScan','Last scan'],['lastTranslate','Last translate'],['bulk','Translate all']
-    ],this.pluginFilters,'plugin');
     const tbody=el(table,'tbody');
     if (!rows.length) {
       const tr=el(tbody,'tr'); const td=el(tr,'td','uopt-empty','No plugins match this search.'); td.colSpan=8;
@@ -317,7 +326,7 @@ class UoptSettingTab extends PluginSettingTab {
         this.selectedPluginId=row.id;
         this.selectedFilePath=null;
         this.fileQuery='';
-        this.fileFilters={path:'',type:'',languages:'',state:'',candidates:'',allowed:''};
+        this.showIgnoredFiles=false;
         this.requestRefresh();
       });
       const name=el(tr,'td'); el(name,'div','uopt-plugin-name',row.name); el(name,'div','uopt-small',row.id);
@@ -345,7 +354,7 @@ class UoptSettingTab extends PluginSettingTab {
   renderPluginDetail(parent) {
     const card = el(parent,'section','uopt-card');
     const head = el(card,'div','uopt-card-head');
-    el(head,'div','uopt-card-title','Plugin detail');
+    el(head,'div','uopt-card-title','Plugin Detail');
     el(head,'div','uopt-card-subtitle','Per-file permission is the safety boundary. Previously approved changed files stay approved; new files do not.');
     const body=el(card,'div','uopt-card-body');
     const plugin=this.plugin.settings.plugins[this.selectedPluginId];
@@ -379,6 +388,26 @@ class UoptSettingTab extends PluginSettingTab {
       return;
     }
 
+    const allFiles=Object.values(plugin.files||{});
+    const ignoredCount=allFiles.filter(file=>file.state==='ignored-localization').length;
+    const fileTools=el(body,'div','uopt-file-tools');
+    const ignoredText=el(fileTools,'div');
+    el(ignoredText,'div','uopt-label','Detected files');
+    el(ignoredText,'div','uopt-help',`${ignoredCount} localization/support file(s) ignored by default.`);
+    if (ignoredCount) {
+      const ignoredLabel=el(fileTools,'label','uopt-switch-label');
+      const showIgnored=el(ignoredLabel,'input','uopt-switch');
+      showIgnored.type='checkbox';
+      showIgnored.checked=this.showIgnoredFiles;
+      el(ignoredLabel,'span','uopt-small','Show ignored');
+      showIgnored.addEventListener('change',()=>{
+        this.showIgnoredFiles=showIgnored.checked;
+        const selected=plugin.files && plugin.files[this.selectedFilePath];
+        if (!this.showIgnoredFiles && selected && selected.state==='ignored-localization') this.selectedFilePath=null;
+        this.requestRefresh();
+      });
+    }
+
     const searchRow=el(body,'div','uopt-search-row');
     const search=input(searchRow,'search',this.fileQuery,'Search files…');
     search.id='uopt-file-search';
@@ -387,11 +416,11 @@ class UoptSettingTab extends PluginSettingTab {
       this.requestRefresh(search.id,search.selectionStart,search.selectionEnd);
     });
 
-    const raw=Object.values(plugin.files||{}).map(f=>({
+    const raw=allFiles.filter(f=>this.showIgnoredFiles || f.state!=='ignored-localization').map(f=>({
       path:f.path,type:fileType(f.path),languages:(f.languages||[]).join(', ')||'English/none',state:stateLabel(f.state),
       candidates:f.candidateCount||0,allowed:f.state==='ignored-localization'?'Ignored':(f.approved?'Allowed':'Blocked'),record:f
     }));
-    const rows=filterSortRows(raw,this.fileQuery,this.fileSort.key,this.fileSort.dir,this.fileFilters);
+    const rows=filterSortRows(raw,this.fileQuery,this.fileSort.key,this.fileSort.dir);
     const scroll=el(body,'div','uopt-table-scroll uopt-five-rows');
     const table=el(scroll,'table','uopt-table uopt-file-table');
     const thead=el(table,'thead');const hr=el(thead,'tr','uopt-sort-row');
@@ -402,9 +431,6 @@ class UoptSettingTab extends PluginSettingTab {
     createSortHeader(hr,'State','state',this.fileSort,sort);
     createSortHeader(hr,'Candidates','candidates',this.fileSort,sort);
     createSortHeader(hr,'Allowed','allowed',this.fileSort,sort);
-    this.renderColumnFilters(thead,[
-      ['path','File'],['type','Type'],['languages','Languages'],['state','State'],['candidates','Candidates'],['allowed','Allowed']
-    ],this.fileFilters,'file');
     const tbody=el(table,'tbody');
     if(!rows.length){const tr=el(tbody,'tr');const td=el(tr,'td','uopt-empty','No files match this search.');td.colSpan=6;}
     for(const row of rows){
@@ -421,49 +447,119 @@ class UoptSettingTab extends PluginSettingTab {
       cb.addEventListener('click',event=>event.stopPropagation());
       cb.addEventListener('change',async()=>{this.plugin.service.setFileApproval(plugin.id,row.path,cb.checked);await this.plugin.saveSettings();await this.plugin.addActivity(`${plugin.name} / ${row.path}: ${cb.checked?'allowed':'blocked'} for translation.`,'info');this.requestRefresh();});
     }
-    this.renderFilePreview(body,plugin);
   }
 
-  renderFilePreview(parent, plugin) {
-    const wrap=el(parent,'section','uopt-file-preview');
-    const head=el(wrap,'div','uopt-file-preview-head');
-    el(head,'div','uopt-card-title','File preview');
-    if (!this.selectedFilePath) {
-      el(wrap,'div','uopt-empty','Select a file row to preview the currently installed file.');
+  renderSelectedFilePreview(parent) {
+    const card=el(parent,'section','uopt-card uopt-file-preview-card');
+    const head=el(card,'div','uopt-card-head uopt-card-head-row');
+    const titleWrap=el(head,'div');
+    el(titleWrap,'div','uopt-card-title','Selected File Preview');
+    const plugin=this.plugin.settings.plugins[this.selectedPluginId];
+    if (!plugin || !this.selectedFilePath) {
+      el(titleWrap,'div','uopt-card-subtitle','Select a detected file to inspect it.');
+      const body=el(card,'div','uopt-card-body');
+      el(body,'div','uopt-empty','Select a file from Plugin Detail to preview it here.');
       return;
     }
+
     const file=plugin.files && plugin.files[this.selectedFilePath];
-    const meta=el(head,'div','uopt-small',this.selectedFilePath);
-    meta.title=this.selectedFilePath;
-    if (file && file.ignoredReason) el(wrap,'div','uopt-banner uopt-banner-neutral',file.ignoredReason);
-    const pre=el(wrap,'pre','uopt-preview-code','Loading preview…');
-    const requestToken=++this.previewRequestToken;
-    void this.plugin.service.readFilePreview(plugin.id,this.selectedFilePath,{maxChars:20000}).then(preview=>{
-      if (requestToken!==this.previewRequestToken || !pre.isConnected) return;
-      pre.textContent=preview.content || '(empty file)';
-      if (preview.truncated) {
-        el(wrap,'div','uopt-help',`Preview truncated at 20,000 of ${preview.totalChars.toLocaleString()} characters.`);
+    if (!file) {
+      el(titleWrap,'div','uopt-card-subtitle','The selected file is no longer present in the latest scan.');
+      const body=el(card,'div','uopt-card-body');
+      el(body,'div','uopt-empty','Select another file from Plugin Detail.');
+      return;
+    }
+
+    const language=previewLanguageForPath(this.selectedFilePath);
+    const markdown=isMarkdownPath(this.selectedFilePath);
+    const fileKey=this.previewFileKey(plugin.id,this.selectedFilePath);
+    const mode=markdown ? (this.previewModeByFile.get(fileKey)||'readable') : 'source';
+    el(titleWrap,'div','uopt-card-subtitle',`${this.selectedFilePath} · ${fileType(this.selectedFilePath)} · ${(file.languages||[]).join(', ')||'English/none'}`);
+
+    if (markdown) {
+      const modes=el(head,'div','uopt-preview-modes');
+      for (const [value,label] of [['readable','Readable'],['source','Source']]) {
+        const modeButton=button(modes,label,`uopt-button uopt-button-small ${mode===value?'is-active':''}`,()=>{
+          if (mode===value) return;
+          const viewport=card.querySelector('.uopt-preview-viewport');
+          if (viewport) {
+            const from=this.capturePreviewScroll(plugin.id,this.selectedFilePath,mode,viewport);
+            this.previewTransition={fileKey,from};
+          }
+          this.previewModeByFile.set(fileKey,value);
+          this.requestRefresh();
+        });
+        modeButton.setAttribute('aria-pressed',mode===value?'true':'false');
       }
+    } else {
+      el(head,'span','uopt-pill uopt-pill-neutral','Source');
+    }
+
+    const body=el(card,'div','uopt-card-body uopt-preview-body');
+    const meta=el(body,'div','uopt-preview-meta');
+    el(meta,'span','uopt-pill uopt-pill-neutral',stateLabel(file.state));
+    el(meta,'span','uopt-pill uopt-pill-neutral',file.approved?'Allowed':'Blocked');
+    if (file.ignoredReason) el(body,'div','uopt-banner uopt-banner-neutral',file.ignoredReason);
+
+    const viewport=el(body,'div','uopt-preview-viewport');
+    viewport.setAttribute('tabindex','0');
+    viewport.setAttribute('aria-label',`${this.selectedFilePath} ${mode} preview`);
+    el(viewport,'div','uopt-preview-loading','Loading preview…');
+    const requestToken=++this.previewRequestToken;
+    void this.plugin.service.readFilePreview(plugin.id,this.selectedFilePath,{maxChars:40000}).then(async preview=>{
+      if (requestToken!==this.previewRequestToken || !viewport.isConnected) return;
+      viewport.empty ? viewport.empty() : viewport.replaceChildren();
+      if (markdown && mode==='readable') {
+        const rendered=el(viewport,'div','uopt-preview-markdown markdown-rendered');
+        const component=new Component();
+        component.load();
+        this.previewRenderComponent=component;
+        await MarkdownRenderer.render(this.app,preview.content||'',rendered,this.selectedFilePath,component);
+      } else {
+        this.renderHighlightedSource(viewport,preview.content||'',language);
+      }
+      if (preview.truncated) el(body,'div','uopt-help',`Preview truncated at 40,000 of ${preview.totalChars.toLocaleString()} characters.`);
+      this.restorePreviewScroll(plugin.id,this.selectedFilePath,mode,viewport);
+      viewport.addEventListener('scroll',()=>this.capturePreviewScroll(plugin.id,this.selectedFilePath,mode,viewport),{passive:true});
     }).catch(error=>{
-      if (requestToken!==this.previewRequestToken || !pre.isConnected) return;
-      pre.textContent=`Unable to preview file: ${error.message || error}`;
+      if (requestToken!==this.previewRequestToken || !viewport.isConnected) return;
+      viewport.textContent=`Unable to preview file: ${error.message || error}`;
     });
   }
 
-  renderColumnFilters(thead, columns, state, prefix) {
-    const row=el(thead,'tr','uopt-filter-row');
-    for(const [key,label] of columns) {
-      const th=el(row,'th','uopt-filter-cell');
-      const control=input(th,'search',state[key]||'',`Filter ${label}…`);
-      control.id=`uopt-${prefix}-filter-${key}`;
-      control.setAttribute('aria-label',`Filter ${label}`);
-      control.addEventListener('click',event=>event.stopPropagation());
-      control.addEventListener('input',()=>{
-        state[key]=control.value;
-        this.requestRefresh(control.id,control.selectionStart,control.selectionEnd);
-      });
+  renderHighlightedSource(parent, source, language) {
+    const pre=el(parent,'pre','uopt-preview-code');
+    const code=el(pre,'code',`uopt-highlight uopt-language-${language}`);
+    for (const item of tokenizeSource(source,language)) {
+      if (item.type==='plain') code.appendChild(code.ownerDocument.createTextNode(item.text));
+      else el(code,'span',`uopt-token uopt-token-${item.type}`,item.text);
     }
-    if(prefix==='plugin') el(row,'th','uopt-filter-cell');
+  }
+
+  previewFileKey(pluginId,filePath) { return `${pluginId}::${filePath}`; }
+  previewScrollKey(pluginId,filePath,mode) { return `${this.previewFileKey(pluginId,filePath)}::${mode}`; }
+
+  capturePreviewScroll(pluginId,filePath,mode,viewport) {
+    const snapshot={top:viewport.scrollTop,scrollHeight:viewport.scrollHeight,clientHeight:viewport.clientHeight};
+    this.previewScroll.set(this.previewScrollKey(pluginId,filePath,mode),snapshot);
+    return snapshot;
+  }
+
+  restorePreviewScroll(pluginId,filePath,mode,viewport) {
+    const key=this.previewScrollKey(pluginId,filePath,mode);
+    const saved=this.previewScroll.get(key);
+    const transition=this.previewTransition;
+    const apply=()=>{
+      if (!viewport.isConnected) return;
+      if (saved) viewport.scrollTop=saved.top;
+      else if (transition && transition.fileKey===this.previewFileKey(pluginId,filePath)) {
+        viewport.scrollTop=proportionalScrollTop(transition.from,{scrollHeight:viewport.scrollHeight,clientHeight:viewport.clientHeight});
+      }
+      if (transition && transition.fileKey===this.previewFileKey(pluginId,filePath)) this.previewTransition=null;
+      this.capturePreviewScroll(pluginId,filePath,mode,viewport);
+    };
+    if (typeof window!=='undefined' && typeof window.requestAnimationFrame==='function') window.requestAnimationFrame(apply);
+    else apply();
   }
 
   toggleSort(state,key){ if(state.key===key) state.dir=state.dir==='asc'?'desc':'asc'; else {state.key=key;state.dir='asc';} }
