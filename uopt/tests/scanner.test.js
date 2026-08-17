@@ -41,20 +41,6 @@ test('filterSortRows searches all columns and sorts requested column', () => {
   assert.deepEqual(filterSortRows(rows,'','count','desc').map(r=>r.count), [5,2,1]);
 });
 
-test('filterSortRows supports simultaneous per-column search filters', () => {
-  const rows = [
-    {name:'Calendar Plus',version:'2.0.0',status:'Updated approved',language:'Chinese'},
-    {name:'Calendar Legacy',version:'1.0.0',status:'Current',language:'Chinese'},
-    {name:'Task Tools',version:'2.0.0',status:'Updated approved',language:'Japanese'}
-  ];
-  const result = filterSortRows(rows, 'calendar', 'name', 'asc', {
-    version:'2.0',
-    status:'updated',
-    language:'chin'
-  });
-  assert.deepEqual(result.map(row => row.name), ['Calendar Plus']);
-});
-
 test('localized README variants are ignored when a canonical README is present', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'uopt-scan-'));
   await fs.writeFile(path.join(dir,'manifest.json'), JSON.stringify({id:'demo',name:'Demo',version:'1.0.0'}));
