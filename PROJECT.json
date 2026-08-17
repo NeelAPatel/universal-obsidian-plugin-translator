@@ -1,0 +1,9 @@
+{
+  "title": "Universal Obsidian Plugin Translator",
+  "shortName": "UOPT",
+  "pluginId": "uopt",
+  "version": "0.1.2",
+  "repository": "NeelAPatel/universal-obsidian-plugin-translator",
+  "projectDirectory": "uopt",
+  "description": "Scans installed Obsidian community plugins for non-English user-facing text and translates approved files to English with recoverable snapshots."
+}
