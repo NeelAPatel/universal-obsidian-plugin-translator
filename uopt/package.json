@@ -1,0 +1,14 @@
+{
+  "name": "universal-obsidian-plugin-translator",
+  "version": "0.1.2",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "npm run build && node --test tests/*.test.js",
+    "build": "node scripts/build.cjs",
+    "check": "node --check src/main.js && for f in src/lib/*.js; do node --check \"$f\"; done",
+    "verify": "npm run build && npm run check && node --check main.js && node --test tests/build.test.js tests/runtime-bundle.test.js",
+    "package": "npm run build && node scripts/package-release.cjs",
+    "install:vault": "npm run build && node scripts/install-local.cjs"
+  }
+}

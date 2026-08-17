@@ -1,0 +1,9 @@
+{
+  "id": "uopt",
+  "name": "Universal Obsidian Plugin Translator",
+  "version": "0.1.2",
+  "minAppVersion": "1.7.2",
+  "description": "Scans installed community plugins for non-English user-facing text and translates approved files to English with recoverable snapshots.",
+  "author": "Neel",
+  "isDesktopOnly": true
+}
