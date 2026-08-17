@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5
+
+- Replaced Ollama JSON-schema translation output with a resilient tab-delimited line protocol while keeping OpenAI Structured Outputs unchanged.
+- Valid Ollama candidate translations now survive malformed sibling lines; only unresolved candidates are retried, up to three protocol attempts.
+- Added a regression test for the real Canvas Enhance failure shape: 29 candidates with one malformed response row retries only that candidate instead of discarding the other 28.
+- Retains recovered Ollama translations as translation memory if a provider-format failure remains, without partially writing the target plugin file. A later **Retry file** call sends only unresolved translation work.
+- Adds `// src/...` source-module labels and prefers module-aware packing when it does not increase provider-call count; otherwise it keeps baseline batching while retaining semantic labels in the prompt.
+- Ollama requests use deterministic temperature 0 and continue to disable thinking for translation output.
+
 ## 0.1.4
 
 - Added structured per-file translation diagnostics with failure category, stage, exact message, provider, model, batch, candidate count, and timestamp.
