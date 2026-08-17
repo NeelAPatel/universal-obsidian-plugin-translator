@@ -1,5 +1,5 @@
 'use strict';
-const { buildTranslationPrompt, TRANSLATION_SCHEMA } = require('./prompts');
+const { buildTranslationPrompt, buildOllamaTranslationPrompt, TRANSLATION_SCHEMA } = require('./prompts');
 
 function extractOpenAIText(json) {
   if (json && typeof json.output_text === 'string') return json.output_text;
@@ -41,6 +41,71 @@ function parseJsonText(text) {
   }
 }
 
+function decodeLineValue(value) {
+  const input = String(value || '');
+  let out = '';
+  for (let i = 0; i < input.length; i++) {
+    if (input[i] !== '\\' || i + 1 >= input.length) {
+      out += input[i];
+      continue;
+    }
+    const next = input[++i];
+    if (next === 'n') out += '\n';
+    else if (next === 'r') out += '\r';
+    else if (next === 't') out += '\t';
+    else if (next === '\\') out += '\\';
+    else out += `\\${next}`;
+  }
+  return out;
+}
+
+function parseOllamaLineProtocol(text, candidates) {
+  const allowed = new Set(candidates.map(c => c.id));
+  const translations = new Map();
+  const skippedIds = new Set();
+  const decidedIds = new Set();
+  const invalidLines = [];
+  const raw = String(text || '').trim();
+  if (!raw) {
+    return {translations, skippedIds, decidedIds, unresolvedIds:new Set(allowed), invalidLines:['<empty response>']};
+  }
+
+  const lines = raw.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index++) {
+    const original = lines[index];
+    const line = original.trimEnd();
+    const trimmed = line.trim();
+    if (!trimmed || /^```(?:text|txt)?\s*$/i.test(trimmed) || trimmed === '```') continue;
+
+    const tab = line.indexOf('\t');
+    if (tab <= 0) {
+      invalidLines.push(original);
+      continue;
+    }
+    const id = line.slice(0, tab).trim();
+    const encoded = line.slice(tab + 1);
+    if (!allowed.has(id) || decidedIds.has(id)) {
+      invalidLines.push(original);
+      continue;
+    }
+    const value = decodeLineValue(encoded).trimEnd();
+    if (!value) {
+      invalidLines.push(original);
+      continue;
+    }
+    if (/^__(?:SKIP)__$/i.test(value) || /^SKIP$/i.test(value)) {
+      skippedIds.add(id);
+      decidedIds.add(id);
+      continue;
+    }
+    translations.set(id, value);
+    decidedIds.add(id);
+  }
+
+  const unresolvedIds = new Set([...allowed].filter(id => !decidedIds.has(id)));
+  return {translations, skippedIds, decidedIds, unresolvedIds, invalidLines};
+}
+
 class OpenAIProvider {
   constructor({ apiKey, model, request }) {
     this.apiKey = apiKey;
@@ -80,11 +145,12 @@ class OpenAIProvider {
 }
 
 class OllamaProvider {
-  constructor({ baseUrl, model, request }) {
+  constructor({ baseUrl, model, request, maxProtocolAttempts }) {
     this.baseUrl = String(baseUrl || 'http://localhost:11434').replace(/\/$/, '');
     this.providerName = 'Ollama';
     this.model = model || 'qwen3:8b';
     this.request = request;
+    this.maxProtocolAttempts = Math.max(1, Number(maxProtocolAttempts) || 3);
   }
   async testConnection() {
     const res = await this.request({
@@ -96,20 +162,58 @@ class OllamaProvider {
     return text.trim();
   }
   async translate(pluginContext, candidates) {
-    const prompt = buildTranslationPrompt(pluginContext, candidates);
-    const res = await this.request({
-      url:`${this.baseUrl}/api/chat`, method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:this.model,
-        messages:[{role:'system',content:prompt.system},{role:'user',content:prompt.user}],
-        stream:false,
-        think:false,
-        format:TRANSLATION_SCHEMA
-      })
-    });
-    const payload = parseJsonText(extractOllamaText(res.json || {}));
-    return normalizeTranslationResult(payload, candidates);
+    const translations = new Map();
+    const decidedIds = new Set();
+    const candidateById = new Map(candidates.map(c => [c.id, c]));
+    let pending = [...candidates];
+    let lastInvalidLines = [];
+
+    for (let attempt = 1; attempt <= this.maxProtocolAttempts && pending.length; attempt++) {
+      const prompt = buildOllamaTranslationPrompt(pluginContext, pending, {retry:attempt > 1});
+      let res;
+      try {
+        res = await this.request({
+          url:`${this.baseUrl}/api/chat`, method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            model:this.model,
+            messages:[{role:'system',content:prompt.system},{role:'user',content:prompt.user}],
+            stream:false,
+            think:false,
+            options:{temperature:0}
+          })
+        });
+      } catch (error) {
+        if (error && typeof error === 'object') {
+          error.uoptStage = error.uoptStage || 'provider';
+          error.uoptPartialTranslations = new Map(translations);
+          error.uoptUnresolvedIds = pending.map(c => c.id);
+        }
+        throw error;
+      }
+
+      const parsed = parseOllamaLineProtocol(extractOllamaText(res.json || {}), pending);
+      lastInvalidLines = parsed.invalidLines;
+      for (const [id, value] of parsed.translations.entries()) translations.set(id, value);
+      for (const id of parsed.decidedIds) decidedIds.add(id);
+      pending = candidates.filter(c => !decidedIds.has(c.id));
+    }
+
+    if (pending.length) {
+      const recovered = translations.size;
+      const error = new Error(`Ollama line protocol left ${pending.length} candidate(s) unresolved after ${this.maxProtocolAttempts} attempt(s); recovered ${recovered} translation(s)`);
+      error.uoptStage = 'provider';
+      error.uoptPartialTranslations = new Map(translations);
+      error.uoptUnresolvedIds = pending.map(c => c.id);
+      error.uoptInvalidLines = lastInvalidLines.slice(0,10);
+      throw error;
+    }
+
+    // Defensively discard any impossible translation id if a provider implementation changes later.
+    return new Map([...translations.entries()].filter(([id]) => candidateById.has(id)));
   }
 }
 
-module.exports = { OpenAIProvider, OllamaProvider, extractOpenAIText, extractOllamaText, normalizeTranslationResult, parseJsonText };
+module.exports = {
+  OpenAIProvider, OllamaProvider, extractOpenAIText, extractOllamaText,
+  normalizeTranslationResult, parseJsonText, parseOllamaLineProtocol, decodeLineValue
+};

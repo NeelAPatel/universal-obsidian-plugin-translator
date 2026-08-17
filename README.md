@@ -2,7 +2,7 @@
 
 UOPT is a desktop-only Obsidian plugin that scans installed Community Plugins for non-English user-facing text and translates approved files into English.
 
-Current release: **v0.1.4**
+Current release: **v0.1.5**
 
 The canonical machine/AI-readable project identity is [`PROJECT.json`](./PROJECT.json). The actual plugin project lives in [`uopt/`](./uopt/).
 
@@ -25,7 +25,7 @@ universal-obsidian-plugin-translator/
     └── package.json
 ```
 
-## What v0.1.4 does
+## What v0.1.5 does
 
 - **Scan all plugins** or scan one plugin at a time.
 - Scan is read-only/local and does not call OpenAI or Ollama.
@@ -39,6 +39,9 @@ universal-obsidian-plugin-translator/
 - Plugin/file tables keep one search bar, sortable columns, and a five-visible-row scrolling viewport; per-column filter controls are intentionally omitted.
 - Ignored localization/support files stay hidden by default and can be revealed with **Show ignored**.
 - Supports OpenAI and Ollama providers.
+- OpenAI keeps JSON-schema Structured Outputs; Ollama uses a resilient line protocol so one malformed response row does not discard valid translations from the same batch.
+- Ollama automatically retries only unresolved candidate IDs and preserves recovered translations as memory if a later retry is still needed.
+- Generated bundles with `// src/...` markers carry source-module context and use module-aware packing only when it does not increase provider-call count.
 - Keeps clean-original and translated snapshots before committing translations.
 - Validates JavaScript/JSON and re-checks the source hash immediately before replacement.
 - Does no polling, background scanning, or provider work while idle.
@@ -122,4 +125,4 @@ npm run package
 
 ## Scope
 
-v0.1.3 targets installed Community Plugins on Obsidian Desktop. It does not translate themes, CSS snippets, core plugins, vault notes, or arbitrary remote text fetched dynamically at runtime.
+v0.1.5 targets installed Community Plugins on Obsidian Desktop. It does not translate themes, CSS snippets, core plugins, vault notes, or arbitrary remote text fetched dynamically at runtime.
