@@ -29,3 +29,29 @@ test('translation orchestration patches only provider-approved candidates', asyn
   assert.equal(result.content, `new Notice("Saved successfully"); const machine = "内部状态";`);
   assert.equal(result.translatedCount, 1);
 });
+
+test('provider failure carries the active translation batch metadata', async () => {
+  const source = 'new Notice("一"); new Notice("二");';
+  const candidates = [
+    {id:'c0',start:12,end:13,text:'一',kind:'js-string',quote:'"',context:'A'.repeat(70),protected:false},
+    {id:'c1',start:29,end:30,text:'二',kind:'js-string',quote:'"',context:'B'.repeat(70),protected:false}
+  ];
+  let calls = 0;
+  const provider = {
+    async translate(){
+      calls++;
+      if (calls === 2) throw new Error('Translation provider did not return valid JSON');
+      return new Map();
+    }
+  };
+  await assert.rejects(
+    () => translateSource({source,candidates,pluginContext:{},provider,maxBatchChars:160}),
+    error => {
+      assert.equal(error.uoptBatch.batch,2);
+      assert.equal(error.uoptBatch.totalBatches,2);
+      assert.equal(error.uoptBatch.candidateCount,1);
+      assert.equal(error.uoptStage,'provider');
+      return true;
+    }
+  );
+});

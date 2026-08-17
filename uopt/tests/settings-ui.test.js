@@ -70,3 +70,19 @@ test('global Scan all and Translate all actions sit above the Summary section', 
   const summary = display.indexOf('renderSummary(');
   assert.ok(actions >= 0 && actions < summary);
 });
+
+test('v0.1.4 surfaces structured failure diagnostics with expandable Activity details and file retry controls', () => {
+  const source = fs.readFileSync(path.join(root,'src','lib','settings-tab.js'),'utf8');
+  assert.match(source,/lastFailure/);
+  assert.match(source,/Show details/);
+  assert.match(source,/Copy error/);
+  assert.match(source,/Retry file/);
+  assert.match(source,/Provider/);
+  assert.match(source,/Model/);
+  assert.match(source,/Batch/);
+  assert.match(source,/formatFailureForClipboard/);
+  assert.match(source,/runRetryFile/);
+  const css = fs.readFileSync(path.join(root,'styles.css'),'utf8');
+  assert.match(css,/uopt-diagnostic/);
+  assert.match(css,/uopt-log-details/);
+});

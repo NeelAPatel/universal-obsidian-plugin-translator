@@ -44,6 +44,7 @@ function parseJsonText(text) {
 class OpenAIProvider {
   constructor({ apiKey, model, request }) {
     this.apiKey = apiKey;
+    this.providerName = 'OpenAI';
     this.model = model || 'gpt-5-mini';
     this.request = request;
   }
@@ -81,6 +82,7 @@ class OpenAIProvider {
 class OllamaProvider {
   constructor({ baseUrl, model, request }) {
     this.baseUrl = String(baseUrl || 'http://localhost:11434').replace(/\/$/, '');
+    this.providerName = 'Ollama';
     this.model = model || 'qwen3:8b';
     this.request = request;
   }

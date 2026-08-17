@@ -146,3 +146,92 @@ test('readFilePreview rejects traversal outside the plugin directory', async () 
   const service = new UoptService({pluginsRoot,selfId:'uopt',snapshotRoot:path.join(root,'snapshots'),state:defaultState()});
   await assert.rejects(() => service.readFilePreview('demo','../../secret.txt'), /unsafe plugin file path/i);
 });
+
+test('failed translation stores structured lastFailure with active batch and clears it after successful retry', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'uopt-service-'));
+  const pluginsRoot = path.join(root,'plugins');
+  const target = path.join(pluginsRoot,'demo');
+  await fs.mkdir(target,{recursive:true});
+  await fs.writeFile(path.join(target,'manifest.json'), JSON.stringify({id:'demo',name:'Demo',version:'1.0.0'}));
+  await fs.writeFile(path.join(target,'main.js'), 'new Notice("保存成功");');
+  const service = new UoptService({pluginsRoot,selfId:'uopt',snapshotRoot:path.join(root,'snapshots'),state:defaultState()});
+  await service.scanPlugin('demo');
+  service.state.plugins.demo.files['main.js'].approved = true;
+  const badProvider = { providerName:'Ollama', model:'qwen3.5:9b', async translate(){ throw new Error('Translation provider did not return valid JSON'); } };
+  const failed = await service.translatePlugin('demo',badProvider,{maxBatchChars:200});
+  assert.equal(failed.errors.length,1);
+  const file = service.state.plugins.demo.files['main.js'];
+  assert.equal(file.lastError,'Translation provider did not return valid JSON');
+  assert.equal(file.lastFailure.category,'Provider format');
+  assert.equal(file.lastFailure.provider,'Ollama');
+  assert.equal(file.lastFailure.model,'qwen3.5:9b');
+  assert.equal(file.lastFailure.batch,1);
+  assert.equal(file.lastFailure.totalBatches,1);
+  assert.ok(file.lastFailure.candidateCount >= 1);
+
+  const goodProvider = { providerName:'Ollama', model:'qwen3.5:9b', async translate(_ctx,batch){ return new Map(batch.map(c=>[c.id,'Saved successfully'])); } };
+  const retried = await service.translatePlugin('demo',goodProvider,{onlyFiles:['main.js']});
+  assert.equal(retried.translatedFiles,1);
+  assert.equal(file.lastError,null);
+  assert.equal(file.lastFailure,null);
+});
+
+test('onlyFiles retries exactly one eligible failed file', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'uopt-service-'));
+  const pluginsRoot = path.join(root,'plugins');
+  const target = path.join(pluginsRoot,'demo');
+  await fs.mkdir(target,{recursive:true});
+  await fs.writeFile(path.join(target,'manifest.json'), JSON.stringify({id:'demo',name:'Demo',version:'1.0.0'}));
+  await fs.writeFile(path.join(target,'main.js'), 'new Notice("保存");');
+  await fs.writeFile(path.join(target,'other.js'), 'new Notice("删除");');
+  const service = new UoptService({pluginsRoot,selfId:'uopt',snapshotRoot:path.join(root,'snapshots'),state:defaultState()});
+  await service.scanPlugin('demo');
+  service.state.plugins.demo.files['main.js'].approved = true;
+  service.state.plugins.demo.files['other.js'].approved = true;
+  const provider = { providerName:'Ollama', model:'qwen3.5:9b', async translate(_ctx,batch){ return new Map(batch.map(c=>[c.id,'Translated'])); } };
+  const result = await service.translatePlugin('demo',provider,{onlyFiles:['main.js']});
+  assert.equal(result.translatedFiles,1);
+  assert.equal(await fs.readFile(path.join(target,'main.js'),'utf8'),'new Notice("Translated");');
+  assert.equal(await fs.readFile(path.join(target,'other.js'),'utf8'),'new Notice("删除");');
+});
+
+test('scan preserves the most recent translation diagnostic until a later successful translation clears it', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'uopt-service-'));
+  const pluginsRoot = path.join(root,'plugins');
+  const target = path.join(pluginsRoot,'demo');
+  await fs.mkdir(target,{recursive:true});
+  await fs.writeFile(path.join(target,'manifest.json'), JSON.stringify({id:'demo',name:'Demo',version:'1.0.0'}));
+  await fs.writeFile(path.join(target,'main.js'), 'new Notice("保存");');
+  const service = new UoptService({pluginsRoot,selfId:'uopt',snapshotRoot:path.join(root,'snapshots'),state:defaultState()});
+  await service.scanPlugin('demo');
+  service.state.plugins.demo.files['main.js'].approved = true;
+  const provider = {providerName:'Ollama',model:'qwen3.5:9b',async translate(){throw new Error('Translation provider did not return valid JSON');}};
+  await service.translatePlugin('demo',provider);
+  const before = service.state.plugins.demo.files['main.js'].lastFailure;
+  assert.ok(before);
+  await service.scanPlugin('demo');
+  const after = service.state.plugins.demo.files['main.js'].lastFailure;
+  assert.equal(after.message,before.message);
+  assert.equal(after.category,'Provider format');
+});
+
+test('scan clears stale failure diagnostics when an upstream file no longer needs translation', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'uopt-service-'));
+  const pluginsRoot = path.join(root,'plugins');
+  const target = path.join(pluginsRoot,'demo');
+  await fs.mkdir(target,{recursive:true});
+  await fs.writeFile(path.join(target,'manifest.json'), JSON.stringify({id:'demo',name:'Demo',version:'1.0.0'}));
+  const targetFile = path.join(target,'main.js');
+  await fs.writeFile(targetFile, 'new Notice("保存");');
+  const service = new UoptService({pluginsRoot,selfId:'uopt',snapshotRoot:path.join(root,'snapshots'),state:defaultState()});
+  await service.scanPlugin('demo');
+  service.state.plugins.demo.files['main.js'].approved = true;
+  const provider = {providerName:'Ollama',model:'qwen3.5:9b',async translate(){throw new Error('Translation provider did not return valid JSON');}};
+  await service.translatePlugin('demo',provider);
+  assert.ok(service.state.plugins.demo.files['main.js'].lastFailure);
+  await fs.writeFile(targetFile, 'new Notice("Saved");');
+  await service.scanPlugin('demo');
+  assert.equal(service.state.plugins.demo.files['main.js'].state,'no-translation');
+  assert.equal(service.state.plugins.demo.files['main.js'].lastFailure,null);
+  assert.equal(service.state.plugins.demo.files['main.js'].lastError,null);
+});

@@ -9,6 +9,7 @@ function pluginBlockedCount(plugin) {
 function pluginStatus(plugin) {
   if (!plugin || !plugin.lastScan) return {label:'Never scanned',tone:'neutral',rank:5};
   const files = Object.values(plugin.files || {});
+  if (files.some(f => f.lastFailure)) return {label:'Translation failed',tone:'danger',rank:0};
   if (pluginBlockedCount(plugin) > 0) return {label:'Approval required',tone:'danger',rank:1};
   if (files.some(f => f.state === 'updated-approved' || f.state === 'original-restored')) return {label:'Update ready',tone:'warning',rank:2};
   if (files.some(f => f.state === 'known-untranslated' || f.state === 'new-file')) return {label:'Translation ready',tone:'warning',rank:3};

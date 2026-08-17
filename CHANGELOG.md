@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4
+
+- Added structured per-file translation diagnostics with failure category, stage, exact message, provider, model, batch, candidate count, and timestamp.
+- Activity error entries now expose expandable diagnostics instead of only a generic validation/provider summary.
+- Failed file rows are visibly marked and the Selected File Preview shows the last translation error.
+- Added **Copy error** and **Retry file** actions. Retry targets only the selected approved failed file and uses the normal snapshot/validation/hash-safe write path.
+- Preserved `lastError` for compatibility while storing structured `lastFailure` diagnostics that clear after a successful translation.
+
 ## 0.1.3
 
 - Reworked settings into the approved single-column flow: global actions → 2×2 Summary → Plugin Summary → Plugin Detail → Selected File Preview → Model Settings → Activity.

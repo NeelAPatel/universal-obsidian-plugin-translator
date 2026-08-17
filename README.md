@@ -2,7 +2,7 @@
 
 UOPT is a desktop-only Obsidian plugin that scans installed Community Plugins for non-English user-facing text and translates approved files into English.
 
-Current release: **v0.1.3**
+Current release: **v0.1.4**
 
 The canonical machine/AI-readable project identity is [`PROJECT.json`](./PROJECT.json). The actual plugin project lives in [`uopt/`](./uopt/).
 
@@ -25,7 +25,7 @@ universal-obsidian-plugin-translator/
     └── package.json
 ```
 
-## What v0.1.3 does
+## What v0.1.4 does
 
 - **Scan all plugins** or scan one plugin at a time.
 - Scan is read-only/local and does not call OpenAI or Ollama.
@@ -42,6 +42,8 @@ universal-obsidian-plugin-translator/
 - Keeps clean-original and translated snapshots before committing translations.
 - Validates JavaScript/JSON and re-checks the source hash immediately before replacement.
 - Does no polling, background scanning, or provider work while idle.
+- Shows exact structured translation failures instead of collapsing provider/validation errors into a generic summary.
+- Failed files expose category, stage, provider, model, batch context, Copy error, and single-file Retry actions.
 
 ## Install
 

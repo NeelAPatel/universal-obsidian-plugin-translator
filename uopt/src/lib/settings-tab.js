@@ -61,6 +61,17 @@ function createSortHeader(row, label, key, state, onSort) {
   return th;
 }
 
+function formatFailureForClipboard(failure) {
+  const f = failure || {};
+  const rows = [
+    ['Category',f.category], ['Stage',f.stage], ['Error',f.message], ['Plugin',f.pluginId], ['File',f.file],
+    ['Provider',f.provider], ['Model',f.model],
+    ['Batch',f.batch && f.totalBatches ? `${f.batch} / ${f.totalBatches}` : f.batch],
+    ['Candidates',f.candidateCount], ['Timestamp',f.timestamp]
+  ];
+  return rows.filter(([,value]) => value !== null && value !== undefined && value !== '').map(([key,value]) => `${key}: ${value}`).join('\n');
+}
+
 class UoptSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -230,6 +241,61 @@ class UoptSettingTab extends PluginSettingTab {
       const row = el(log,'div',`uopt-log uopt-log-${item.tone || 'info'}`);
       el(row,'div','uopt-log-message',item.message);
       el(row,'div','uopt-log-time',formatTime(item.timestamp));
+      if (item.tone === 'error' && item.details && item.details.message) {
+        this.renderFailureDiagnostic(row,item.details,{collapsible:true});
+      }
+    }
+  }
+
+  renderFailureDiagnostic(parent, failure, options={}) {
+    const host = options.collapsible ? el(parent,'details','uopt-log-details') : el(parent,'div','uopt-diagnostic');
+    if (options.collapsible) el(host,'summary','uopt-diagnostic-summary','Show details');
+    else {
+      el(host,'div','uopt-diagnostic-title','Last translation error');
+      el(host,'div','uopt-diagnostic-category',`${failure.category || 'Unknown'}${failure.message ? ` — ${failure.message}` : ''}`);
+    }
+    const grid=el(host,'div','uopt-diagnostic-grid');
+    const fields=[
+      ['Stage',failure.stage],['Error',failure.message],['File',failure.file],['Provider',failure.provider],['Model',failure.model],
+      ['Batch',failure.batch && failure.totalBatches ? `${failure.batch} / ${failure.totalBatches}` : failure.batch],
+      ['Candidates',failure.candidateCount],['Timestamp',failure.timestamp ? formatTime(failure.timestamp) : null]
+    ];
+    for (const [key,value] of fields) {
+      if (value === null || value === undefined || value === '') continue;
+      el(grid,'div','uopt-meta-key',key);
+      el(grid,'div','uopt-meta-value',String(value));
+    }
+    const actions=el(host,'div','uopt-diagnostic-actions');
+    button(actions,'Copy error','uopt-button uopt-button-small',async()=>this.copyFailure(failure));
+    if (failure.pluginId && failure.file) {
+      const retry=button(actions,'Retry file','uopt-button uopt-button-small',async(_e,b)=>{
+        b.disabled=true;
+        try { await this.plugin.runRetryFile(failure.pluginId,failure.file); }
+        catch (_) {}
+        finally { b.disabled=false; this.requestRefresh(); }
+      });
+      const plugin=this.plugin.settings.plugins && this.plugin.settings.plugins[failure.pluginId];
+      const file=plugin && plugin.files && plugin.files[failure.file];
+      retry.disabled=this.plugin.busy || !file || !file.approved;
+    }
+    return host;
+  }
+
+  async copyFailure(failure) {
+    const text=formatFailureForClipboard(failure);
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const area=document.createElement('textarea');
+        area.value=text; area.setAttribute('readonly',''); area.style.position='fixed'; area.style.opacity='0';
+        document.body.appendChild(area); area.select();
+        if (!document.execCommand || !document.execCommand('copy')) throw new Error('Clipboard API unavailable');
+        area.remove();
+      }
+      new Notice('UOPT error details copied.');
+    } catch (error) {
+      new Notice(`UOPT could not copy error details: ${error.message || error}`);
     }
   }
 
@@ -417,7 +483,7 @@ class UoptSettingTab extends PluginSettingTab {
     });
 
     const raw=allFiles.filter(f=>this.showIgnoredFiles || f.state!=='ignored-localization').map(f=>({
-      path:f.path,type:fileType(f.path),languages:(f.languages||[]).join(', ')||'English/none',state:stateLabel(f.state),
+      path:f.path,type:fileType(f.path),languages:(f.languages||[]).join(', ')||'English/none',state:f.lastFailure?'Translation failed':stateLabel(f.state),
       candidates:f.candidateCount||0,allowed:f.state==='ignored-localization'?'Ignored':(f.approved?'Allowed':'Blocked'),record:f
     }));
     const rows=filterSortRows(raw,this.fileQuery,this.fileSort.key,this.fileSort.dir);
@@ -440,7 +506,7 @@ class UoptSettingTab extends PluginSettingTab {
       const pathCell=el(tr,'td','uopt-file-path',row.path);
       if (row.record.ignoredReason) pathCell.title=row.record.ignoredReason;
       el(tr,'td',null,row.type); el(tr,'td',null,row.languages);
-      const st=el(tr,'td'); el(st,'span','uopt-pill uopt-pill-neutral',row.state); el(tr,'td',null,String(row.candidates));
+      const st=el(tr,'td'); el(st,'span',`uopt-pill ${row.record.lastFailure?'uopt-pill-danger':'uopt-pill-neutral'}`,row.state); el(tr,'td',null,String(row.candidates));
       const allowed=el(tr,'td'); const label=el(allowed,'label','uopt-switch-label'); const cb=el(label,'input','uopt-switch'); cb.type='checkbox'; cb.checked=row.record.approved;
       const immutable = row.record.state==='no-translation' || row.record.state==='translated-current' || row.record.state==='ignored-localization';
       cb.disabled=this.plugin.busy || immutable; el(label,'span','uopt-small',row.record.state==='ignored-localization'?'Ignored':(cb.checked?'Allowed':'Blocked'));
@@ -497,9 +563,10 @@ class UoptSettingTab extends PluginSettingTab {
 
     const body=el(card,'div','uopt-card-body uopt-preview-body');
     const meta=el(body,'div','uopt-preview-meta');
-    el(meta,'span','uopt-pill uopt-pill-neutral',stateLabel(file.state));
+    el(meta,'span',`uopt-pill ${file.lastFailure?'uopt-pill-danger':'uopt-pill-neutral'}`,file.lastFailure?'Translation failed':stateLabel(file.state));
     el(meta,'span','uopt-pill uopt-pill-neutral',file.approved?'Allowed':'Blocked');
     if (file.ignoredReason) el(body,'div','uopt-banner uopt-banner-neutral',file.ignoredReason);
+    if (file.lastFailure) this.renderFailureDiagnostic(body,file.lastFailure,{collapsible:false});
 
     const viewport=el(body,'div','uopt-preview-viewport');
     viewport.setAttribute('tabindex','0');

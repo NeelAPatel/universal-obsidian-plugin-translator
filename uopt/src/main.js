@@ -61,8 +61,9 @@ class UniversalObsidianPluginTranslator extends Plugin {
     await this.saveData(this.settings);
   }
 
-  async addActivity(message, tone='info') {
+  async addActivity(message, tone='info', details=null) {
     const entry = { timestamp:new Date().toISOString(), tone, message };
+    if (details && typeof details === 'object') entry.details = details;
     this.settings.activity = [entry, ...(this.settings.activity || [])].slice(0,100);
     if (this.service) this.service.state.activity = this.settings.activity;
     await this.saveSettings();
@@ -228,31 +229,68 @@ class UniversalObsidianPluginTranslator extends Plugin {
     }
   }
 
-  async translatePluginInternal(pluginId) {
+  async translatePluginInternal(pluginId, options={}) {
     const plugin = this.settings.plugins[pluginId];
     if (!plugin || !plugin.lastScan) throw new Error('Scan this plugin before translating it');
-    const eligible = this.service.eligibleFiles(pluginId);
+    const onlyFiles = Array.isArray(options.onlyFiles) ? options.onlyFiles : null;
+    const eligible = this.service.eligibleFiles(pluginId).filter(file => !onlyFiles || onlyFiles.includes(file.path));
     if (!eligible.length) {
       await this.addActivity(`${plugin.name}: nothing approved needs translation.`, 'info');
       this.notify(`${plugin.name}: nothing approved needs translation.`);
       return {translatedFiles:0,translatedStrings:0,errors:[]};
     }
-    await this.addActivity(`Translating ${plugin.name}: ${eligible.length} approved file(s).`, 'action');
+    const label = onlyFiles && onlyFiles.length === 1 ? `${plugin.name} / ${onlyFiles[0]}` : plugin.name;
+    await this.addActivity(`${options.retry ? 'Retrying' : 'Translating'} ${label}: ${eligible.length} approved file(s).`, 'action');
     await this.enrichContextForTranslation(pluginId);
     const provider = this.providerFromSettings();
     const result = await this.service.translatePlugin(pluginId, provider, {
-      onBatch: async ({file,batch,total}) => {
-        await this.addActivity(`${plugin.name} / ${file}: translation batch ${batch}/${total}.`, 'info');
+      onlyFiles,
+      onBatch: async ({file,batch,total,items}) => {
+        await this.addActivity(`${plugin.name} / ${file}: translation batch ${batch}/${total}.`, 'info', {
+          pluginId, file, provider:provider.providerName || null, model:provider.model || null,
+          batch, totalBatches:total, candidateCount:Array.isArray(items) ? items.length : null
+        });
       }
     });
     await this.saveSettings();
     if (result.errors.length) {
-      await this.addActivity(`${plugin.name}: ${result.translatedFiles} file(s) translated; ${result.errors.length} failed validation/provider processing.`, 'error');
+      for (const failure of result.errors) {
+        const diagnostic = failure.diagnostic || {pluginId,file:failure.file,message:failure.error,category:'Unknown',stage:'Unknown'};
+        await this.addActivity(`${plugin.name} / ${failure.file}: ${diagnostic.category} — ${diagnostic.message}`, 'error', diagnostic);
+      }
+      await this.addActivity(`${plugin.name}: ${result.translatedFiles} file(s) translated; ${result.errors.length} failed. Expand the error entry for exact diagnostics.`, 'error');
     } else {
       await this.addActivity(`${plugin.name}: translated ${result.translatedStrings} string(s) across ${result.translatedFiles} file(s).`, 'success');
     }
-    this.notify(`${plugin.name}: translation complete. Reload the plugin or Obsidian if its UI is already open.`, 7000);
+    this.notify(`${plugin.name}: translation ${result.errors.length ? 'finished with errors' : 'complete'}. Reload the plugin or Obsidian if its UI is already open.`, 7000);
     return result;
+  }
+
+  async runRetryFile(pluginId, filePath) {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      const plugin = this.settings.plugins[pluginId];
+      const file = plugin && plugin.files && plugin.files[filePath];
+      if (!plugin || !file) throw new Error('The selected plugin file is no longer available');
+      if (!file.approved) throw new Error('Approve this file before retrying it');
+      const result = await this.translatePluginInternal(pluginId, {onlyFiles:[filePath], retry:true});
+      if (!result.errors.length) this.notify(`${plugin.name} / ${filePath}: retry succeeded.`);
+      return result;
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      await this.addActivity(`Retry failed for ${pluginId} / ${filePath}: ${message}`, 'error', {
+        pluginId, file:filePath, category:'Unknown', stage:'Retry setup', message,
+        provider:this.settings.provider === 'ollama' ? 'Ollama' : 'OpenAI',
+        model:this.settings.provider === 'ollama' ? this.settings.ollamaModel : this.settings.openaiModel,
+        timestamp:new Date().toISOString()
+      });
+      this.notify(`UOPT retry failed: ${message}`, 8000);
+      throw error;
+    } finally {
+      this.busy = false;
+      if (this.settingsTab) this.settingsTab.requestRefresh();
+    }
   }
 
   async runTranslateAll() {
