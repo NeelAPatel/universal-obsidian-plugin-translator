@@ -255,7 +255,8 @@ class UoptService {
           provider,
           filePath:file.path,
           seedTranslations,
-          maxBatchChars:options.maxBatchChars || 14000,
+          maxBatchChars:options.maxBatchChars || provider && provider.recommendedBatchChars || 14000,
+          maxBatchCandidates:options.maxBatchCandidates || provider && provider.recommendedBatchCandidates || null,
           onBatch: async (batch,total,items) => {
             currentBatch = {batch,totalBatches:total,candidateCount:items.length};
             await safeRunLog(options.runLogger,'appendEvent','batch_started',{pluginId,file:file.path,batch,totalBatches:total,candidateCount:items.length});
