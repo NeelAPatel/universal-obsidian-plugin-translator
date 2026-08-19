@@ -1,10 +1,12 @@
 ## 0.1.8
 
 - Replaced sequential Ollama wire IDs with deterministic opaque candidate tokens to prevent silent translation drift.
-- Added safe recovery for literal \t / \n protocol separators while preserving escapes inside translation values.
-- Reduced Ollama batches to at most 24k estimated characters and 48 candidates.
-- Duplicate or invented candidate tokens are rejected and retried rather than silently accepted.
-- Provider-format failures now quarantine/discard partial translation memory; previously failed format memory is invalidated before reuse.
+- Added safe recovery for literal `\t` / `\n` protocol separators while preserving escapes inside translation values.
+- Reduced Ollama batches to at most 24k estimated characters and 48 candidates; callers cannot raise the provider above those safety ceilings.
+- Duplicate, malformed-reused, or invented candidate tokens are rejected and retried rather than silently accepted.
+- Provider-format failures no longer persist partial translation memory. All unversioned pre-v0.1.8 translation memory is treated as untrusted and invalidated before reuse; successful v0.1.8 memory carries a provenance version through future scans.
+- Moved translated-snapshot persistence before the atomic client-plugin replacement so a snapshot failure leaves the client file byte-for-byte untouched.
+- Made translation-log writes and final run-log flushing fail-open so diagnostics failures cannot change a successful translation outcome.
 - Retained v0.1.7 full request/response/parser logging for forensic verification.
 
 ## 0.1.7
