@@ -1,3 +1,12 @@
+## 0.1.8
+
+- Replaced sequential Ollama wire IDs with deterministic opaque candidate tokens to prevent silent translation drift.
+- Added safe recovery for literal \t / \n protocol separators while preserving escapes inside translation values.
+- Reduced Ollama batches to at most 24k estimated characters and 48 candidates.
+- Duplicate or invented candidate tokens are rejected and retried rather than silently accepted.
+- Provider-format failures now quarantine/discard partial translation memory; previously failed format memory is invalidated before reuse.
+- Retained v0.1.7 full request/response/parser logging for forensic verification.
+
 ## 0.1.7
 
 - Added live per-run translation logs under `uopt/logs/` with request, raw response, extracted output, parser result, telemetry, and append-only events.

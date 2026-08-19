@@ -22,6 +22,10 @@ function defaultState() {
   };
 }
 
+function shouldInvalidateTranslationMemory(file) {
+  return !!(file && file.lastFailure && file.lastFailure.category === 'Provider format');
+}
+
 function memoryKey(source, candidate) {
   const before = source.slice(Math.max(0, candidate.start - 100), candidate.start)
     .replace(/\s+/g, ' ').trim().slice(-80);
@@ -116,6 +120,9 @@ class UoptService {
     const previous = this.state.plugins[pluginId];
     const result = await scanPluginDirectory({pluginDir, pluginId, previous});
     const files = Object.fromEntries(result.files.map(f => [f.path, f]));
+    for (const file of Object.values(files)) {
+      if (shouldInvalidateTranslationMemory(file)) file.translationMemory = [];
+    }
     const localDocs = await collectLocalDocs(pluginDir);
     let repoInfo = null;
     if (this.repositoryContextFetcher) {
@@ -222,6 +229,7 @@ class UoptService {
           error.uoptStage = 'filesystem';
           throw error;
         }
+        if (shouldInvalidateTranslationMemory(file)) file.translationMemory = [];
         const seedTranslations = memorySeed(source, candidates, file.translationMemory);
         const result = await translateSource({
           source,
@@ -299,10 +307,6 @@ class UoptService {
         translatedStrings += result.translatedCount;
         if (options.runLogger) await options.runLogger.appendEvent('file_succeeded',{pluginId,file:file.path,translatedCount:result.translatedCount,translatedHash});
       } catch (error) {
-        if (source && candidates.length && error && error.uoptPartialTranslations instanceof Map) {
-          const recoveredMemory = translationMemoryEntries(source, candidates, error.uoptPartialTranslations);
-          if (recoveredMemory.length) file.translationMemory = mergeTranslationMemory(file.translationMemory, recoveredMemory);
-        }
         const failureStage = error && error.uoptStage;
         const batchMeta = failureStage === 'provider' ? (error && error.uoptBatch || currentBatch || {}) : {};
         const diagnostic = createFailureDiagnostic(error, {
@@ -333,4 +337,4 @@ class UoptService {
   }
 }
 
-module.exports = { UoptService, defaultState, memoryKey, memorySeed, translationMemoryEntries, mergeTranslationMemory };
+module.exports = { UoptService, defaultState, memoryKey, memorySeed, translationMemoryEntries, mergeTranslationMemory, shouldInvalidateTranslationMemory };

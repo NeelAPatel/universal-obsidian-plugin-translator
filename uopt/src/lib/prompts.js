@@ -43,10 +43,11 @@ function buildOllamaTranslationPrompt(pluginContext, candidates, options={}) {
     system: [
       ...commonTranslationRules(),
       'Return plain text only. Do not return JSON, Markdown fences, prose, reasoning, headings, or explanations.',
-      'Return exactly one record for every candidate using: candidate-id<TAB>translation',
+      'Return exactly one record for every candidate: copy its opaque candidate token, then ONE REAL TAB character, then the translation.',
+      'Separate records with REAL newline characters. Do not write the two literal characters \\t or \\n as protocol separators.',
       'If a candidate must not be translated, use the literal translation value __SKIP__.',
-      'Candidate IDs must be copied exactly. Never invent IDs.',
-      String.raw`A translation must stay on one physical output line. Escape backslash as \\, tab as \t, newline as \n, and carriage return as \r inside the translation value.`,
+      'Candidate tokens must be copied exactly from the input. Never shorten, increment, infer, or invent tokens.',
+      String.raw`Only inside the translation value: escape backslash as \\, tab as \t, newline as \n, and carriage return as \r so each record remains one physical output line.`,
       retry ? 'This is a retry containing only candidates that were unresolved previously. Answer every candidate.' : 'Answer every candidate exactly once.'
     ].join('\n'),
     user: JSON.stringify({

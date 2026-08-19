@@ -1,6 +1,7 @@
 'use strict';
 const { buildTranslationPrompt, buildOllamaTranslationPrompt, TRANSLATION_SCHEMA } = require('./prompts');
-const { OLLAMA_BATCH_CHAR_BUDGET, OLLAMA_KEEP_ALIVE, aggregateOllamaTelemetry } = require('./ollama-speed');
+const { OLLAMA_BATCH_CHAR_BUDGET, OLLAMA_BATCH_MAX_CANDIDATES, OLLAMA_KEEP_ALIVE, aggregateOllamaTelemetry } = require('./ollama-speed');
+const { assignOllamaProtocolTokens, parseOllamaLineProtocol, decodeLineValue } = require('./ollama-protocol');
 
 async function safeLog(logger, method, ...args) {
   if (!logger || typeof logger[method] !== 'function') return;
@@ -45,71 +46,6 @@ function parseJsonText(text) {
     if (!match) throw new Error('Translation provider did not return valid JSON');
     return JSON.parse(match[0]);
   }
-}
-
-function decodeLineValue(value) {
-  const input = String(value || '');
-  let out = '';
-  for (let i = 0; i < input.length; i++) {
-    if (input[i] !== '\\' || i + 1 >= input.length) {
-      out += input[i];
-      continue;
-    }
-    const next = input[++i];
-    if (next === 'n') out += '\n';
-    else if (next === 'r') out += '\r';
-    else if (next === 't') out += '\t';
-    else if (next === '\\') out += '\\';
-    else out += `\\${next}`;
-  }
-  return out;
-}
-
-function parseOllamaLineProtocol(text, candidates) {
-  const allowed = new Set(candidates.map(c => c.id));
-  const translations = new Map();
-  const skippedIds = new Set();
-  const decidedIds = new Set();
-  const invalidLines = [];
-  const raw = String(text || '').trim();
-  if (!raw) {
-    return {translations, skippedIds, decidedIds, unresolvedIds:new Set(allowed), invalidLines:['<empty response>']};
-  }
-
-  const lines = raw.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index++) {
-    const original = lines[index];
-    const line = original.trimEnd();
-    const trimmed = line.trim();
-    if (!trimmed || /^```(?:text|txt)?\s*$/i.test(trimmed) || trimmed === '```') continue;
-
-    const tab = line.indexOf('\t');
-    if (tab <= 0) {
-      invalidLines.push(original);
-      continue;
-    }
-    const id = line.slice(0, tab).trim();
-    const encoded = line.slice(tab + 1);
-    if (!allowed.has(id) || decidedIds.has(id)) {
-      invalidLines.push(original);
-      continue;
-    }
-    const value = decodeLineValue(encoded).trimEnd();
-    if (!value) {
-      invalidLines.push(original);
-      continue;
-    }
-    if (/^__(?:SKIP)__$/i.test(value) || /^SKIP$/i.test(value)) {
-      skippedIds.add(id);
-      decidedIds.add(id);
-      continue;
-    }
-    translations.set(id, value);
-    decidedIds.add(id);
-  }
-
-  const unresolvedIds = new Set([...allowed].filter(id => !decidedIds.has(id)));
-  return {translations, skippedIds, decidedIds, unresolvedIds, invalidLines};
 }
 
 class OpenAIProvider {
@@ -183,6 +119,7 @@ class OllamaProvider {
     this.maxProtocolAttempts = Math.max(1, Number(maxProtocolAttempts) || 3);
     this.keepAlive = keepAlive || OLLAMA_KEEP_ALIVE;
     this.recommendedBatchChars = OLLAMA_BATCH_CHAR_BUDGET;
+    this.recommendedBatchCandidates = OLLAMA_BATCH_MAX_CANDIDATES;
     this.lastTelemetry = null;
     this.lastConnectionCheck = null;
     this.runLogger = runLogger;
@@ -212,10 +149,11 @@ class OllamaProvider {
     return text.trim();
   }
   async translate(pluginContext, candidates, context={}) {
+    const protocolCandidates = assignOllamaProtocolTokens(candidates);
     const translations = new Map();
     const decidedIds = new Set();
-    const candidateById = new Map(candidates.map(c => [c.id, c]));
-    let pending = [...candidates];
+    const candidateById = new Map(protocolCandidates.map(c => [c.id, c]));
+    let pending = [...protocolCandidates];
     let lastInvalidLines = [];
     const telemetrySamples = [];
 
@@ -260,7 +198,7 @@ class OllamaProvider {
       lastInvalidLines = parsed.invalidLines;
       for (const [id, value] of parsed.translations.entries()) translations.set(id, value);
       for (const id of parsed.decidedIds) decidedIds.add(id);
-      pending = candidates.filter(c => !decidedIds.has(c.id));
+      pending = protocolCandidates.filter(c => !decidedIds.has(c.id));
       const telemetry = aggregateOllamaTelemetry([res && res.json || {}]);
       const parse = {
         accepted:parsed.decidedIds.size,
@@ -295,5 +233,5 @@ class OllamaProvider {
 
 module.exports = {
   OpenAIProvider, OllamaProvider, extractOpenAIText, extractOllamaText,
-  normalizeTranslationResult, parseJsonText, parseOllamaLineProtocol, decodeLineValue
+  normalizeTranslationResult, parseJsonText, parseOllamaLineProtocol, decodeLineValue, assignOllamaProtocolTokens
 };

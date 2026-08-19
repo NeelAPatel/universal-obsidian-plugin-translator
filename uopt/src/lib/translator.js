@@ -29,13 +29,14 @@ function annotateSemanticGroups(candidates, source='') {
   });
 }
 
-function splitBudget(items, maxChars) {
+function splitBudget(items, maxChars, maxItems = Infinity) {
   const batches = [];
   let batch = [];
   let cost = 0;
+  const itemLimit = Number.isFinite(Number(maxItems)) && Number(maxItems) > 0 ? Math.floor(Number(maxItems)) : Infinity;
   for (const candidate of items) {
     const next = candidateCost(candidate);
-    if (batch.length && cost + next > maxChars) {
+    if (batch.length && (cost + next > maxChars || batch.length >= itemLimit)) {
       batches.push(batch);
       batch = [];
       cost = 0;
@@ -47,10 +48,10 @@ function splitBudget(items, maxChars) {
   return batches;
 }
 
-function batchCandidates(candidates, maxChars = 14000, source = '') {
+function batchCandidates(candidates, maxChars = 14000, source = '', maxItems = Infinity) {
   const annotated = annotateSemanticGroups(candidates, source);
   if (!annotated.length) return [];
-  if (!sourceModuleMarkers(source).length) return splitBudget(annotated, maxChars);
+  if (!sourceModuleMarkers(source).length) return splitBudget(annotated, maxChars, maxItems);
 
   const groups = [];
   let group = [];
@@ -65,7 +66,7 @@ function batchCandidates(candidates, maxChars = 14000, source = '') {
   }
   if (group.length) groups.push(group);
 
-  const baselineBatches = splitBudget(annotated, maxChars);
+  const baselineBatches = splitBudget(annotated, maxChars, maxItems);
   const batches = [];
   let packed = [];
   let packedCost = 0;
@@ -77,12 +78,12 @@ function batchCandidates(candidates, maxChars = 14000, source = '') {
 
   for (const semanticGroup of groups) {
     const groupCost = semanticGroup.reduce((sum,candidate)=>sum + candidateCost(candidate),0);
-    if (groupCost > maxChars) {
+    if (groupCost > maxChars || semanticGroup.length > maxItems) {
       flushPacked();
-      batches.push(...splitBudget(semanticGroup, maxChars));
+      batches.push(...splitBudget(semanticGroup, maxChars, maxItems));
       continue;
     }
-    if (packed.length && packedCost + groupCost > maxChars) flushPacked();
+    if (packed.length && (packedCost + groupCost > maxChars || packed.length + semanticGroup.length > maxItems)) flushPacked();
     packed.push(...semanticGroup);
     packedCost += groupCost;
   }
@@ -90,14 +91,17 @@ function batchCandidates(candidates, maxChars = 14000, source = '') {
   return batches.length <= baselineBatches.length ? batches : baselineBatches;
 }
 
-async function translateSource({ source, candidates, pluginContext, provider, filePath = null, maxBatchChars = null, onBatch, onBatchComplete, onAttempt, seedTranslations = new Map() }) {
+async function translateSource({ source, candidates, pluginContext, provider, filePath = null, maxBatchChars = null, maxBatchCandidates = null, onBatch, onBatchComplete, onAttempt, seedTranslations = new Map() }) {
   const translations = new Map(seedTranslations);
   const eligible = candidates.filter(c => !c.protected && !translations.has(c.id));
   const configuredBudget = Math.max(0, Number(maxBatchChars) || 0);
   const providerBudget = Math.max(0, Number(provider && provider.recommendedBatchChars) || 0);
+  const configuredCandidateLimit = Math.max(0, Number(maxBatchCandidates) || 0);
+  const providerCandidateLimit = Math.max(0, Number(provider && provider.recommendedBatchCandidates) || 0);
   const baseBudget = configuredBudget || 14000;
   const effectiveBatchChars = providerBudget ? Math.max(baseBudget, providerBudget) : baseBudget;
-  const batches = batchCandidates(eligible, effectiveBatchChars, source);
+  const effectiveBatchCandidates = configuredCandidateLimit && providerCandidateLimit ? Math.min(configuredCandidateLimit,providerCandidateLimit) : configuredCandidateLimit || providerCandidateLimit || Infinity;
+  const batches = batchCandidates(eligible, effectiveBatchChars, source, effectiveBatchCandidates);
   for (let i = 0; i < batches.length; i++) {
     if (onBatch) await onBatch(i + 1, batches.length, batches[i]);
     let result;

@@ -1,6 +1,7 @@
 'use strict';
 
-const OLLAMA_BATCH_CHAR_BUDGET = 42000;
+const OLLAMA_BATCH_CHAR_BUDGET = 24000;
+const OLLAMA_BATCH_MAX_CANDIDATES = 48;
 const OLLAMA_KEEP_ALIVE = '15m';
 
 function clip(text, maxChars) {
@@ -32,7 +33,7 @@ function compactOllamaCandidate(candidate={}) {
   const simple = isSimpleUiCandidate(candidate);
   const contextLimit = simple ? 220 : 700;
   return {
-    id:candidate.id,
+    id:candidate.protocolId || candidate.id,
     text:candidate.text,
     kind:candidate.kind,
     sourceSection:candidate.semanticGroup || null,
@@ -57,6 +58,7 @@ function aggregateOllamaTelemetry(samples=[]) {
 
 module.exports = {
   OLLAMA_BATCH_CHAR_BUDGET,
+  OLLAMA_BATCH_MAX_CANDIDATES,
   OLLAMA_KEEP_ALIVE,
   compactOllamaPluginContext,
   compactOllamaCandidate,
