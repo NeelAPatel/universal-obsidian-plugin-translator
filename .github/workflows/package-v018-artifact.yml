@@ -1,0 +1,43 @@
+name: Package v0.1.8 artifact
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: uopt
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: uopt/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Test released tree
+        run: npm test
+      - name: Verify released bundle
+        run: npm run verify
+      - name: Package released tree
+        run: npm run package
+      - name: Create install ZIP
+        run: (cd dist && zip -r uopt.zip uopt)
+      - name: Verify ZIP
+        run: |
+          unzip -t dist/uopt.zip
+          test "$(unzip -Z1 dist/uopt.zip | grep -E '^uopt/[^/]+$' | wc -l)" -eq 3
+          unzip -Z1 dist/uopt.zip | grep -Fx 'uopt/main.js'
+          unzip -Z1 dist/uopt.zip | grep -Fx 'uopt/manifest.json'
+          unzip -Z1 dist/uopt.zip | grep -Fx 'uopt/styles.css'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UOPT-v0.1.8-install
+          path: uopt/dist/uopt.zip
+          if-no-files-found: error
