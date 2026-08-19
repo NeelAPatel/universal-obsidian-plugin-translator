@@ -1,0 +1,4 @@
+'use strict';
+const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');const root=path.resolve(__dirname,'..');
+test('v0.1.7 exposes obvious provider select and log controls',()=>{const s=fs.readFileSync(path.join(root,'src/lib/settings-tab.js'),'utf8'),css=fs.readFileSync(path.join(root,'styles.css'),'utf8');assert.match(s,/uopt-select-wrap/);assert.match(s,/Open logs folder/);assert.match(s,/Copy logs path/);assert.match(s,/Clear logs/);assert.match(css,/\.uopt-select-wrap::after/);});
+test('operation feedback exposes attempt and parser counts',()=>{const s=fs.readFileSync(path.join(root,'src/main.js'),'utf8');assert.match(s,/Attempt \$\{operation\.attempt\}/);assert.match(s,/accepted/);assert.match(s,/unresolved/);assert.match(s,/Open log folder/);});

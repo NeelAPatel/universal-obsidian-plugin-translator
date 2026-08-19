@@ -1,3 +1,10 @@
+## 0.1.7
+
+- Added live per-run translation logs under `uopt/logs/` with request, raw response, extracted output, parser result, telemetry, and append-only events.
+- Added run IDs, attempt/acceptance/unresolved counters, Ollama timing telemetry, and log-folder controls to the UI.
+- Added automatic OpenAI secret redaction and log retention (20 runs / 250 MB).
+- Fixed the Provider selector so it is visually obvious as a dropdown.
+
 # Changelog
 
 ## 0.1.6

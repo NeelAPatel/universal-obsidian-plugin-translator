@@ -52,8 +52,6 @@ function batchCandidates(candidates, maxChars = 14000, source = '') {
   if (!annotated.length) return [];
   if (!sourceModuleMarkers(source).length) return splitBudget(annotated, maxChars);
 
-  // Treat source modules as semantic units, but pack small adjacent modules together
-  // so semantic coherence does not multiply provider calls or token overhead.
   const groups = [];
   let group = [];
   let groupKey = annotated[0].semanticGroup;
@@ -89,13 +87,10 @@ function batchCandidates(candidates, maxChars = 14000, source = '') {
     packedCost += groupCost;
   }
   flushPacked();
-  // Translation quality may benefit from source-module boundaries, but provider-call
-  // count is a direct cost/latency concern. Never choose semantic packing when it
-  // would create more calls than the original sequential character-budget batching.
   return batches.length <= baselineBatches.length ? batches : baselineBatches;
 }
 
-async function translateSource({ source, candidates, pluginContext, provider, maxBatchChars = null, onBatch, onBatchComplete, seedTranslations = new Map() }) {
+async function translateSource({ source, candidates, pluginContext, provider, filePath = null, maxBatchChars = null, onBatch, onBatchComplete, onAttempt, seedTranslations = new Map() }) {
   const translations = new Map(seedTranslations);
   const eligible = candidates.filter(c => !c.protected && !translations.has(c.id));
   const configuredBudget = Math.max(0, Number(maxBatchChars) || 0);
@@ -107,7 +102,12 @@ async function translateSource({ source, candidates, pluginContext, provider, ma
     if (onBatch) await onBatch(i + 1, batches.length, batches[i]);
     let result;
     try {
-      result = await provider.translate(pluginContext, batches[i]);
+      result = await provider.translate(pluginContext, batches[i], {
+        file:filePath || 'unknown',
+        batch:i + 1,
+        totalBatches:batches.length,
+        onAttempt: onAttempt ? info => onAttempt({...info,batch:i + 1,totalBatches:batches.length,file:filePath || info.file || 'unknown'}) : null
+      });
     } catch (error) {
       if (error && typeof error === 'object') {
         if (error.uoptPartialTranslations instanceof Map) {

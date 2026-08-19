@@ -169,7 +169,6 @@ class UoptService {
     return Object.values(plugin.files).filter(f => f.approved && ['new-file','known-untranslated','updated-approved','original-restored'].includes(f.state));
   }
 
-
   async readFilePreview(pluginId, relativePath, options={}) {
     const pluginDir = path.resolve(this.pluginsRoot, pluginId);
     const candidate = path.resolve(pluginDir, ...String(relativePath || '').split('/'));
@@ -212,6 +211,10 @@ class UoptService {
           throw error;
         }
         candidates = extractCandidates(file.path, source);
+        if (options.runLogger) {
+          await options.runLogger.writeCandidates(file.path, candidates, {sourceHash,candidateCount:candidates.length,fileIndex:fileIndex+1,fileTotal:targetFiles.length});
+          await options.runLogger.appendEvent('file_started',{pluginId,file:file.path,sourceHash,candidateCount:candidates.length,fileIndex:fileIndex+1,fileTotal:targetFiles.length});
+        }
         let originalSnapshot;
         try {
           originalSnapshot = await this.snapshotStore.save(pluginId, file.path, 'original', sourceHash, source);
@@ -225,11 +228,20 @@ class UoptService {
           candidates,
           pluginContext:plugin.contextMemo,
           provider,
+          filePath:file.path,
           seedTranslations,
           maxBatchChars:options.maxBatchChars || 14000,
           onBatch: async (batch,total,items) => {
             currentBatch = {batch,totalBatches:total,candidateCount:items.length};
+            if (options.runLogger) await options.runLogger.appendEvent('batch_started',{pluginId,file:file.path,batch,totalBatches:total,candidateCount:items.length});
             if (options.onBatch) await options.onBatch({pluginId,file:file.path,fileIndex:fileIndex+1,fileTotal:targetFiles.length,batch,total,items});
+          },
+          onAttempt: async info => {
+            if (options.onAttempt) await options.onAttempt({pluginId,file:file.path,fileIndex:fileIndex+1,fileTotal:targetFiles.length,...info});
+          },
+          onBatchComplete: async (batch,total,items,telemetry) => {
+            if (options.runLogger) await options.runLogger.appendEvent('batch_complete',{pluginId,file:file.path,batch,totalBatches:total,candidateCount:items.length,telemetry});
+            if (options.onBatchComplete) await options.onBatchComplete({pluginId,file:file.path,batch,total,items,telemetry});
           }
         });
         const validation = validateContent(file.path, result.content);
@@ -285,6 +297,7 @@ class UoptService {
         });
         translatedFiles++;
         translatedStrings += result.translatedCount;
+        if (options.runLogger) await options.runLogger.appendEvent('file_succeeded',{pluginId,file:file.path,translatedCount:result.translatedCount,translatedHash});
       } catch (error) {
         if (source && candidates.length && error && error.uoptPartialTranslations instanceof Map) {
           const recoveredMemory = translationMemoryEntries(source, candidates, error.uoptPartialTranslations);
@@ -302,6 +315,11 @@ class UoptService {
           totalBatches:batchMeta.totalBatches,
           candidateCount:batchMeta.candidateCount
         });
+        if (options.runLogger) {
+          diagnostic.runId = options.runLogger.runId;
+          diagnostic.logPath = options.runLogger.runDir;
+          await options.runLogger.appendEvent('file_failed',{...diagnostic});
+        }
         file.lastError = diagnostic.message;
         file.lastFailure = diagnostic;
         errors.push({file:file.path,error:diagnostic.message,diagnostic});
