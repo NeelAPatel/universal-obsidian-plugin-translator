@@ -1,5 +1,7 @@
 'use strict';
 
+const { compactOllamaPluginContext, compactOllamaCandidate } = require('./ollama-speed');
+
 const OBSIDIAN_GLOSSARY = `Canonical Obsidian terminology: Vault = an Obsidian vault; note = a Markdown note; Properties = Obsidian Properties; Command Palette = Obsidian Command Palette; Canvas = Obsidian Canvas; ribbon = the left ribbon; workspace = Obsidian workspace; backlink = backlink; frontmatter = YAML properties/frontmatter. Prefer natural English used by Obsidian rather than literal software-engineering translations.`;
 
 function commonTranslationRules() {
@@ -47,7 +49,10 @@ function buildOllamaTranslationPrompt(pluginContext, candidates, options={}) {
       String.raw`A translation must stay on one physical output line. Escape backslash as \\, tab as \t, newline as \n, and carriage return as \r inside the translation value.`,
       retry ? 'This is a retry containing only candidates that were unresolved previously. Answer every candidate.' : 'Answer every candidate exactly once.'
     ].join('\n'),
-    user: JSON.stringify({ plugin: pluginContext, candidates: candidatePayload(candidates) })
+    user: JSON.stringify({
+      plugin: compactOllamaPluginContext(pluginContext),
+      candidates: candidates.map(compactOllamaCandidate)
+    })
   };
 }
 

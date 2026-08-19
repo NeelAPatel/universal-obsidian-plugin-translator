@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.6
+
+- Increased the Ollama translation batch budget from the generic 14k-character path to a 42k-character local-model budget, reducing sequential provider calls for large bundled plugins.
+- Keeps Ollama models warm for 15 minutes during connection tests and translation runs instead of unloading after a test.
+- Compacts repeated plugin documentation/context sent to Ollama while preserving plugin identity, Obsidian terminology, source-module labels, and nearby source context.
+- Uses shorter nearby context for trivial short UI labels and richer context for ambiguous/longer UI strings.
+- Captures Ollama prompt/generation/load timing counters so provider latency can be profiled without changing translation output semantics.
+- OpenAI Structured Outputs behavior and its conservative batch budget remain unchanged.
+
 ## 0.1.5
 
 - Replaced Ollama JSON-schema translation output with a resilient tab-delimited line protocol while keeping OpenAI Structured Outputs unchanged.

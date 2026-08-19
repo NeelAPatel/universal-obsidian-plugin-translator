@@ -1,5 +1,6 @@
 'use strict';
 const { buildTranslationPrompt, buildOllamaTranslationPrompt, TRANSLATION_SCHEMA } = require('./prompts');
+const { OLLAMA_BATCH_CHAR_BUDGET, OLLAMA_KEEP_ALIVE, aggregateOllamaTelemetry } = require('./ollama-speed');
 
 function extractOpenAIText(json) {
   if (json && typeof json.output_text === 'string') return json.output_text;
@@ -112,6 +113,8 @@ class OpenAIProvider {
     this.providerName = 'OpenAI';
     this.model = model || 'gpt-5-mini';
     this.request = request;
+    this.recommendedBatchChars = 14000;
+    this.lastTelemetry = null;
   }
   async testConnection() {
     if (!this.apiKey) throw new Error('OpenAI API key is empty');
@@ -145,20 +148,39 @@ class OpenAIProvider {
 }
 
 class OllamaProvider {
-  constructor({ baseUrl, model, request, maxProtocolAttempts }) {
+  constructor({ baseUrl, model, request, maxProtocolAttempts, keepAlive }) {
     this.baseUrl = String(baseUrl || 'http://localhost:11434').replace(/\/$/, '');
     this.providerName = 'Ollama';
     this.model = model || 'qwen3:8b';
     this.request = request;
     this.maxProtocolAttempts = Math.max(1, Number(maxProtocolAttempts) || 3);
+    this.keepAlive = keepAlive || OLLAMA_KEEP_ALIVE;
+    this.recommendedBatchChars = OLLAMA_BATCH_CHAR_BUDGET;
+    this.lastTelemetry = null;
+    this.lastConnectionCheck = null;
   }
   async testConnection() {
-    const res = await this.request({
-      url:`${this.baseUrl}/api/chat`, method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:this.model,messages:[{role:'user',content:'Reply with exactly OK.'}],stream:false,think:false,keep_alive:0})
-    });
+    try {
+      await this.request({url:`${this.baseUrl}/api/tags`,method:'GET'});
+    } catch (error) {
+      const wrapped = new Error(`Ollama server is not reachable at ${this.baseUrl}: ${error && error.message ? error.message : error}`);
+      wrapped.code = error && error.code;
+      throw wrapped;
+    }
+    let res;
+    try {
+      res = await this.request({
+        url:`${this.baseUrl}/api/chat`, method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:this.model,messages:[{role:'user',content:'Reply with exactly OK.'}],stream:false,think:false,keep_alive:this.keepAlive,options:{temperature:0}})
+      });
+    } catch (error) {
+      const wrapped = new Error(`Ollama server is reachable, but model ${this.model} could not respond: ${error && error.message ? error.message : error}`);
+      wrapped.code = error && error.code;
+      throw wrapped;
+    }
     const text = extractOllamaText(res.json || {});
-    if (!text) throw new Error('Ollama connection succeeded but returned no text');
+    if (!text) throw new Error(`Ollama server is reachable, but model ${this.model} returned no text`);
+    this.lastConnectionCheck = {serverReachable:true,modelResponded:true,model:this.model,baseUrl:this.baseUrl};
     return text.trim();
   }
   async translate(pluginContext, candidates) {
@@ -167,6 +189,7 @@ class OllamaProvider {
     const candidateById = new Map(candidates.map(c => [c.id, c]));
     let pending = [...candidates];
     let lastInvalidLines = [];
+    const telemetrySamples = [];
 
     for (let attempt = 1; attempt <= this.maxProtocolAttempts && pending.length; attempt++) {
       const prompt = buildOllamaTranslationPrompt(pluginContext, pending, {retry:attempt > 1});
@@ -179,18 +202,22 @@ class OllamaProvider {
             messages:[{role:'system',content:prompt.system},{role:'user',content:prompt.user}],
             stream:false,
             think:false,
+            keep_alive:this.keepAlive,
             options:{temperature:0}
           })
         });
       } catch (error) {
+        this.lastTelemetry = aggregateOllamaTelemetry(telemetrySamples);
         if (error && typeof error === 'object') {
           error.uoptStage = error.uoptStage || 'provider';
           error.uoptPartialTranslations = new Map(translations);
           error.uoptUnresolvedIds = pending.map(c => c.id);
+          error.uoptTelemetry = this.lastTelemetry;
         }
         throw error;
       }
 
+      if (res && res.json) telemetrySamples.push(res.json);
       const parsed = parseOllamaLineProtocol(extractOllamaText(res.json || {}), pending);
       lastInvalidLines = parsed.invalidLines;
       for (const [id, value] of parsed.translations.entries()) translations.set(id, value);
@@ -198,6 +225,7 @@ class OllamaProvider {
       pending = candidates.filter(c => !decidedIds.has(c.id));
     }
 
+    this.lastTelemetry = aggregateOllamaTelemetry(telemetrySamples);
     if (pending.length) {
       const recovered = translations.size;
       const error = new Error(`Ollama line protocol left ${pending.length} candidate(s) unresolved after ${this.maxProtocolAttempts} attempt(s); recovered ${recovered} translation(s)`);
@@ -205,10 +233,10 @@ class OllamaProvider {
       error.uoptPartialTranslations = new Map(translations);
       error.uoptUnresolvedIds = pending.map(c => c.id);
       error.uoptInvalidLines = lastInvalidLines.slice(0,10);
+      error.uoptTelemetry = this.lastTelemetry;
       throw error;
     }
 
-    // Defensively discard any impossible translation id if a provider implementation changes later.
     return new Map([...translations.entries()].filter(([id]) => candidateById.has(id)));
   }
 }

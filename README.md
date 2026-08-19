@@ -2,7 +2,7 @@
 
 UOPT is a desktop-only Obsidian plugin that scans installed Community Plugins for non-English user-facing text and translates approved files into English.
 
-Current release: **v0.1.5**
+Current release: **v0.1.6**
 
 The canonical machine/AI-readable project identity is [`PROJECT.json`](./PROJECT.json). The actual plugin project lives in [`uopt/`](./uopt/).
 
@@ -25,7 +25,7 @@ universal-obsidian-plugin-translator/
     └── package.json
 ```
 
-## What v0.1.5 does
+## What v0.1.6 does
 
 - **Scan all plugins** or scan one plugin at a time.
 - Scan is read-only/local and does not call OpenAI or Ollama.
@@ -41,6 +41,10 @@ universal-obsidian-plugin-translator/
 - Supports OpenAI and Ollama providers.
 - OpenAI keeps JSON-schema Structured Outputs; Ollama uses a resilient line protocol so one malformed response row does not discard valid translations from the same batch.
 - Ollama automatically retries only unresolved candidate IDs and preserves recovered translations as memory if a later retry is still needed.
+- Ollama uses a larger 42k-character batch budget to reduce sequential local-model calls for large bundled plugins while OpenAI remains on the conservative generic budget.
+- Ollama keeps the selected model resident for 15 minutes during connection tests and translation runs.
+- Repeated Ollama prompts compact bulky plugin documentation and use shorter context for trivial UI labels while retaining richer context for ambiguous strings.
+- Ollama response timing counters are captured for profiling model-load, prompt-evaluation, and generation latency.
 - Generated bundles with `// src/...` markers carry source-module context and use module-aware packing only when it does not increase provider-call count.
 - Keeps clean-original and translated snapshots before committing translations.
 - Validates JavaScript/JSON and re-checks the source hash immediately before replacement.
@@ -96,7 +100,7 @@ npm run install:vault -- "/path/to/your/Vault"
 
 ## Scan behavior
 
-UOPT deliberately avoids treating localization material as untranslated UI when it can identify intent safely. v0.1.3 continues to ignore:
+UOPT deliberately avoids treating localization material as untranslated UI when it can identify intent safely. v0.1.6 continues to ignore:
 
 - `README.zh-CN.md`/`README.ja.md`-style localized documentation variants when a canonical sibling such as `README.md` exists;
 - non-English locale resources such as `locales/zh-CN.json` when an English sibling such as `locales/en.json` exists;
@@ -125,4 +129,4 @@ npm run package
 
 ## Scope
 
-v0.1.5 targets installed Community Plugins on Obsidian Desktop. It does not translate themes, CSS snippets, core plugins, vault notes, or arbitrary remote text fetched dynamically at runtime.
+v0.1.6 targets installed Community Plugins on Obsidian Desktop. It does not translate themes, CSS snippets, core plugins, vault notes, or arbitrary remote text fetched dynamically at runtime.
