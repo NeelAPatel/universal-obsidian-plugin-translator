@@ -6,6 +6,7 @@ const os=require('node:os');
 const path=require('node:path');
 const {UoptService,defaultState,memoryKey,TRANSLATION_MEMORY_VERSION}=require('../src/lib/service');
 const {extractCandidates}=require('../src/lib/candidates');
+const {TranslationRunLogger}=require('../src/lib/run-logger');
 
 async function fixture(source='new Notice("保存");') {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'uopt-v018-'));
@@ -34,6 +35,14 @@ test('unversioned pre-v0.1.8 translation memory is never reused, then successful
   assert.equal(calls,1,'legacy memory must not suppress a provider call');
   assert.equal(await fs.readFile(path.join(target,'main.js'),'utf8'),'new Notice("Fresh");');
   assert.equal(file.translationMemoryVersion,TRANSLATION_MEMORY_VERSION);
+});
+
+test('v0.1.8 translation-memory provenance survives a later scan',async()=>{
+  const {service}=await fixture();
+  const provider={providerName:'Ollama',model:'qwen3.5:9b',async translate(_ctx,batch){return new Map(batch.map(c=>[c.id,'Saved']));}};
+  await service.translatePlugin('demo',provider);
+  await service.scanPlugin('demo');
+  assert.equal(service.state.plugins.demo.files['main.js'].translationMemoryVersion,TRANSLATION_MEMORY_VERSION);
 });
 
 test('translation logging failures are diagnostic-only and cannot fail or alter a successful target translation',async()=>{
@@ -65,4 +74,12 @@ test('translated snapshot failure happens before atomic replacement so the clien
   assert.equal(result.errors.length,1);
   assert.match(result.errors[0].error,/snapshot disk full/);
   assert.equal(await fs.readFile(targetFile,'utf8'),original);
+});
+
+test('final run-log flush failure is fail-open and only records logger.lastError',async()=>{
+  const logger=new TranslationRunLogger({baseDir:path.join(os.tmpdir(),'uopt-v018-log')});
+  logger.runDir='/synthetic/run';
+  logger.writeRun=async()=>{throw new Error('final log disk full');};
+  await assert.doesNotReject(()=>logger.finish('success',{translatedFiles:1}));
+  assert.match(logger.lastError,/final log disk full/);
 });
