@@ -16,19 +16,15 @@ test('v0.1.6 keeps a transient current operation and refreshes the UI as scan/tr
   assert.match(source,/totalBatches/);
 });
 
-test('settings UI surfaces current operation instead of only a generic Working label', () => {
-  const source = fs.readFileSync(path.join(root,'src','lib','settings-tab.js'),'utf8');
-  assert.match(source,/renderCurrentOperation/);
+test('current operation feedback is rendered into the settings DOM with scan/translate labels and batch progress', () => {
+  const source = fs.readFileSync(path.join(root,'src','main.js'),'utf8');
+  assert.match(source,/renderOperationFeedback/);
   assert.match(source,/Current operation/);
   assert.match(source,/uopt-operation/);
   assert.match(source,/operation\.batch/);
   assert.match(source,/operation\.totalBatches/);
   assert.match(source,/Scanning…/);
   assert.match(source,/Translating…/);
-});
-
-test('operation status has dedicated styling', () => {
-  const css = fs.readFileSync(path.join(root,'styles.css'),'utf8');
-  assert.match(css,/\.uopt-operation\s*\{/);
-  assert.match(css,/\.uopt-operation-progress\s*\{/);
+  assert.match(source,/uopt-operation-progress/);
+  assert.match(source,/document\.createElement\('progress'\)/);
 });
