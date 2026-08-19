@@ -2,6 +2,11 @@
 const { buildTranslationPrompt, buildOllamaTranslationPrompt, TRANSLATION_SCHEMA } = require('./prompts');
 const { OLLAMA_BATCH_CHAR_BUDGET, OLLAMA_KEEP_ALIVE, aggregateOllamaTelemetry } = require('./ollama-speed');
 
+async function safeLog(logger, method, ...args) {
+  if (!logger || typeof logger[method] !== 'function') return;
+  try { await logger[method](...args); } catch (error) { logger.lastError = error && error.message ? error.message : String(error); }
+}
+
 function extractOpenAIText(json) {
   if (json && typeof json.output_text === 'string') return json.output_text;
   const pieces = [];
@@ -108,13 +113,14 @@ function parseOllamaLineProtocol(text, candidates) {
 }
 
 class OpenAIProvider {
-  constructor({ apiKey, model, request }) {
+  constructor({ apiKey, model, request, runLogger=null }) {
     this.apiKey = apiKey;
     this.providerName = 'OpenAI';
     this.model = model || 'gpt-5-mini';
     this.request = request;
     this.recommendedBatchChars = 14000;
     this.lastTelemetry = null;
+    this.runLogger = runLogger;
   }
   async testConnection() {
     if (!this.apiKey) throw new Error('OpenAI API key is empty');
@@ -127,9 +133,9 @@ class OpenAIProvider {
     if (!text) throw new Error('OpenAI connection succeeded but returned no text');
     return text.trim();
   }
-  async translate(pluginContext, candidates) {
+  async translate(pluginContext, candidates, context={}) {
     const prompt = buildTranslationPrompt(pluginContext, candidates);
-    const res = await this.request({
+    const requestPayload = {
       url:'https://api.openai.com/v1/responses', method:'POST',
       headers:{'Content-Type':'application/json','Authorization':`Bearer ${this.apiKey}`},
       body: JSON.stringify({
@@ -141,14 +147,35 @@ class OpenAIProvider {
         ],
         text:{format:{type:'json_schema',name:'uopt_translation',strict:true,schema:TRANSLATION_SCHEMA}}
       })
-    });
-    const payload = parseJsonText(extractOpenAIText(res.json || {}));
-    return normalizeTranslationResult(payload, candidates);
+    };
+    const attemptCtx = {file:context.file || 'unknown',batch:context.batch || 1,totalBatches:context.totalBatches || 1,attempt:1,maxAttempts:1,candidateCount:candidates.length};
+    await safeLog(this.runLogger,'recordAttemptRequest',attemptCtx,requestPayload);
+    if (context.onAttempt) await context.onAttempt({...attemptCtx,phase:'request',accepted:0,unresolved:candidates.length});
+    let res;
+    try { res = await this.request(requestPayload); }
+    catch (error) {
+      await safeLog(this.runLogger,'recordAttemptResponse',attemptCtx,{error,parse:{accepted:0,unresolved:candidates.length,acceptedIds:[],unresolvedIds:candidates.map(c=>c.id)}});
+      throw error;
+    }
+    const output = extractOpenAIText(res.json || {});
+    try {
+      const payload = parseJsonText(output);
+      const result = normalizeTranslationResult(payload, candidates);
+      const acceptedIds=[...result.keys()];
+      const unresolvedIds=candidates.map(c=>c.id).filter(id=>!result.has(id));
+      const parse={accepted:acceptedIds.length,unresolved:unresolvedIds.length,acceptedIds,unresolvedIds,invalidLines:[]};
+      await safeLog(this.runLogger,'recordAttemptResponse',attemptCtx,{response:res.json || {},output,parse});
+      if (context.onAttempt) await context.onAttempt({...attemptCtx,phase:'response',accepted:acceptedIds.length,unresolved:unresolvedIds.length});
+      return result;
+    } catch (error) {
+      await safeLog(this.runLogger,'recordAttemptResponse',attemptCtx,{response:res.json || {},output,parse:{accepted:0,unresolved:candidates.length,acceptedIds:[],unresolvedIds:candidates.map(c=>c.id),invalidLines:[]},error});
+      throw error;
+    }
   }
 }
 
 class OllamaProvider {
-  constructor({ baseUrl, model, request, maxProtocolAttempts, keepAlive }) {
+  constructor({ baseUrl, model, request, maxProtocolAttempts, keepAlive, runLogger=null }) {
     this.baseUrl = String(baseUrl || 'http://localhost:11434').replace(/\/$/, '');
     this.providerName = 'Ollama';
     this.model = model || 'qwen3:8b';
@@ -158,6 +185,7 @@ class OllamaProvider {
     this.recommendedBatchChars = OLLAMA_BATCH_CHAR_BUDGET;
     this.lastTelemetry = null;
     this.lastConnectionCheck = null;
+    this.runLogger = runLogger;
   }
   async testConnection() {
     try {
@@ -183,7 +211,7 @@ class OllamaProvider {
     this.lastConnectionCheck = {serverReachable:true,modelResponded:true,model:this.model,baseUrl:this.baseUrl};
     return text.trim();
   }
-  async translate(pluginContext, candidates) {
+  async translate(pluginContext, candidates, context={}) {
     const translations = new Map();
     const decidedIds = new Set();
     const candidateById = new Map(candidates.map(c => [c.id, c]));
@@ -193,21 +221,30 @@ class OllamaProvider {
 
     for (let attempt = 1; attempt <= this.maxProtocolAttempts && pending.length; attempt++) {
       const prompt = buildOllamaTranslationPrompt(pluginContext, pending, {retry:attempt > 1});
+      const attemptCtx = {
+        file:context.file || 'unknown',batch:context.batch || 1,totalBatches:context.totalBatches || 1,
+        attempt,maxAttempts:this.maxProtocolAttempts,candidateCount:pending.length
+      };
+      const requestPayload = {
+        url:`${this.baseUrl}/api/chat`, method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          model:this.model,
+          messages:[{role:'system',content:prompt.system},{role:'user',content:prompt.user}],
+          stream:false,
+          think:false,
+          keep_alive:this.keepAlive,
+          options:{temperature:0}
+        })
+      };
+      await safeLog(this.runLogger,'recordAttemptRequest',attemptCtx,requestPayload);
+      if (context.onAttempt) await context.onAttempt({...attemptCtx,phase:'request',accepted:decidedIds.size,unresolved:pending.length});
       let res;
       try {
-        res = await this.request({
-          url:`${this.baseUrl}/api/chat`, method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({
-            model:this.model,
-            messages:[{role:'system',content:prompt.system},{role:'user',content:prompt.user}],
-            stream:false,
-            think:false,
-            keep_alive:this.keepAlive,
-            options:{temperature:0}
-          })
-        });
+        res = await this.request(requestPayload);
       } catch (error) {
         this.lastTelemetry = aggregateOllamaTelemetry(telemetrySamples);
+        await safeLog(this.runLogger,'recordAttemptResponse',attemptCtx,{error,parse:{accepted:0,unresolved:pending.length,acceptedIds:[],unresolvedIds:pending.map(c=>c.id),invalidLines:[]},telemetry:this.lastTelemetry});
+        if (context.onAttempt) await context.onAttempt({...attemptCtx,phase:'error',accepted:decidedIds.size,unresolved:pending.length,error:String(error && error.message || error)});
         if (error && typeof error === 'object') {
           error.uoptStage = error.uoptStage || 'provider';
           error.uoptPartialTranslations = new Map(translations);
@@ -218,11 +255,26 @@ class OllamaProvider {
       }
 
       if (res && res.json) telemetrySamples.push(res.json);
-      const parsed = parseOllamaLineProtocol(extractOllamaText(res.json || {}), pending);
+      const output = extractOllamaText(res.json || {});
+      const parsed = parseOllamaLineProtocol(output, pending);
       lastInvalidLines = parsed.invalidLines;
       for (const [id, value] of parsed.translations.entries()) translations.set(id, value);
       for (const id of parsed.decidedIds) decidedIds.add(id);
       pending = candidates.filter(c => !decidedIds.has(c.id));
+      const telemetry = aggregateOllamaTelemetry([res && res.json || {}]);
+      const parse = {
+        accepted:parsed.decidedIds.size,
+        translated:parsed.translations.size,
+        skipped:parsed.skippedIds.size,
+        unresolved:parsed.unresolvedIds.size,
+        acceptedIds:[...parsed.decidedIds],
+        translatedIds:[...parsed.translations.keys()],
+        skippedIds:[...parsed.skippedIds],
+        unresolvedIds:[...parsed.unresolvedIds],
+        invalidLines:parsed.invalidLines
+      };
+      await safeLog(this.runLogger,'recordAttemptResponse',attemptCtx,{response:res && res.json || {},output,parse,telemetry});
+      if (context.onAttempt) await context.onAttempt({...attemptCtx,phase:'response',accepted:decidedIds.size,acceptedThisAttempt:parsed.decidedIds.size,unresolved:pending.length,invalidLines:parsed.invalidLines.length,telemetry});
     }
 
     this.lastTelemetry = aggregateOllamaTelemetry(telemetrySamples);
