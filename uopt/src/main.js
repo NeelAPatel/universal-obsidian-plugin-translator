@@ -65,12 +65,81 @@ class UniversalObsidianPluginTranslator extends Plugin {
       ...operation,
       startedAt:sameRun && previous.startedAt ? previous.startedAt : Date.now()
     } : null;
-    if (this.settingsTab) this.settingsTab.requestRefresh();
+    if (this.settingsTab) {
+      this.settingsTab.requestRefresh();
+      if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
+        window.setTimeout(()=>this.renderOperationFeedback(),0);
+      }
+    }
   }
 
   clearOperation() {
     this.operation = null;
     if (this.settingsTab) this.settingsTab.requestRefresh();
+  }
+
+  renderOperationFeedback() {
+    const tab = this.settingsTab;
+    const container = tab && tab.containerEl;
+    if (!container || !container.querySelector) return;
+    const operation = this.operation;
+    const status = container.querySelector('.uopt-idle-status');
+    if (status) {
+      status.textContent = !operation ? 'Idle · 0 background activity' : (operation.kind === 'scan' ? 'Scanning…' : 'Translating…');
+    }
+    for (const old of container.querySelectorAll ? container.querySelectorAll('.uopt-operation') : []) old.remove();
+    if (!operation) return;
+    if (operation.pluginId && tab.selectedPluginId && operation.pluginId !== tab.selectedPluginId) return;
+    const cards = container.querySelectorAll ? [...container.querySelectorAll('.uopt-card')] : [];
+    const detailCard = cards.find(card => {
+      const title = card.querySelector && card.querySelector('.uopt-card-title');
+      return title && title.textContent === 'Plugin Detail';
+    });
+    const body = detailCard && detailCard.querySelector && detailCard.querySelector('.uopt-card-body');
+    if (!body || typeof document === 'undefined') return;
+    const host = document.createElement('div');
+    host.className = 'uopt-operation uopt-banner uopt-banner-neutral';
+    const title = document.createElement('div');
+    title.className = 'uopt-label';
+    title.textContent = 'Current operation';
+    host.appendChild(title);
+    const message = document.createElement('div');
+    message.textContent = operation.label || (operation.kind === 'scan' ? 'Scanning…' : 'Translating…');
+    host.appendChild(message);
+    if (operation.file) {
+      const file = document.createElement('div');
+      file.className = 'uopt-small';
+      file.textContent = operation.file;
+      host.appendChild(file);
+    }
+    if (operation.batch && operation.totalBatches) {
+      const progress = document.createElement('progress');
+      progress.className = 'uopt-operation-progress';
+      progress.max = operation.totalBatches;
+      progress.value = operation.batch;
+      progress.style.width = '100%';
+      progress.style.marginTop = '8px';
+      host.appendChild(progress);
+      const detail = document.createElement('div');
+      detail.className = 'uopt-small';
+      detail.textContent = `Batch ${operation.batch} / ${operation.totalBatches}${operation.candidateCount ? ` · ${operation.candidateCount} candidates` : ''}`;
+      host.appendChild(detail);
+    } else if (operation.current != null && operation.total) {
+      const progress = document.createElement('progress');
+      progress.className = 'uopt-operation-progress';
+      progress.max = operation.total;
+      progress.value = operation.current;
+      progress.style.width = '100%';
+      progress.style.marginTop = '8px';
+      host.appendChild(progress);
+      const detail = document.createElement('div');
+      detail.className = 'uopt-small';
+      detail.textContent = `${operation.current} / ${operation.total}`;
+      host.appendChild(detail);
+    }
+    const anchor = body.querySelector && body.querySelector('.uopt-actions');
+    if (anchor && anchor.parentNode === body) body.insertBefore(host,anchor);
+    else body.prepend(host);
   }
 
   async saveSettings() {
@@ -180,7 +249,7 @@ class UniversalObsidianPluginTranslator extends Plugin {
         this.setOperation({kind:'scan',pluginId:id,label:`Scanning ${id}…`,current:completed,total:ids.length});
         const record = await this.service.scanPlugin(id);
         completed++;
-        this.setOperation({kind:'scan',pluginId:id,label:`Scanning plugins…`,current:completed,total:ids.length});
+        this.setOperation({kind:'scan',pluginId:id,label:'Scanning plugins…',current:completed,total:ids.length});
         await this.saveSettings();
         await this.addActivity(`Scanned ${record.name} (${completed}/${ids.length}).`, 'info');
       }
