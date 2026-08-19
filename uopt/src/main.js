@@ -29,6 +29,7 @@ class UniversalObsidianPluginTranslator extends Plugin {
   async onload() {
     this.settings = mergeState(await this.loadData());
     this.busy = false;
+    this.operation = null;
     this.communityIndexCache = null;
     this.settingsTab = null;
 
@@ -54,6 +55,22 @@ class UniversalObsidianPluginTranslator extends Plugin {
 
     this.addCommand({ id:'scan-all-plugins', name:'Scan all community plugins', callback:()=>this.runScanAll() });
     this.addCommand({ id:'translate-all-approved', name:'Translate all approved plugin changes', callback:()=>this.runTranslateAll() });
+  }
+
+  setOperation(operation) {
+    const previous = this.operation;
+    const sameRun = previous && operation && previous.kind === operation.kind && previous.pluginId === operation.pluginId;
+    this.operation = operation ? {
+      ...(sameRun ? previous : {}),
+      ...operation,
+      startedAt:sameRun && previous.startedAt ? previous.startedAt : Date.now()
+    } : null;
+    if (this.settingsTab) this.settingsTab.requestRefresh();
+  }
+
+  clearOperation() {
+    this.operation = null;
+    if (this.settingsTab) this.settingsTab.requestRefresh();
   }
 
   async saveSettings() {
@@ -123,12 +140,14 @@ class UniversalObsidianPluginTranslator extends Plugin {
       throw error;
     } finally {
       this.busy = false;
+      if (this.settingsTab) this.settingsTab.requestRefresh();
     }
   }
 
   async runScanPlugin(pluginId) {
     if (this.busy) return;
     this.busy = true;
+    this.setOperation({kind:'scan',pluginId,label:`Scanning ${pluginId}…`});
     try {
       await this.addActivity(`Scanning ${pluginId}…`, 'action');
       const record = await this.service.scanPlugin(pluginId);
@@ -145,6 +164,7 @@ class UniversalObsidianPluginTranslator extends Plugin {
       throw error;
     } finally {
       this.busy = false;
+      this.clearOperation();
     }
   }
 
@@ -155,9 +175,12 @@ class UniversalObsidianPluginTranslator extends Plugin {
       await this.addActivity('Scan all started.', 'action');
       const ids = await this.service.listPluginIds();
       let completed = 0;
+      this.setOperation({kind:'scan',label:'Scanning plugins…',current:0,total:ids.length});
       for (const id of ids) {
+        this.setOperation({kind:'scan',pluginId:id,label:`Scanning ${id}…`,current:completed,total:ids.length});
         const record = await this.service.scanPlugin(id);
         completed++;
+        this.setOperation({kind:'scan',pluginId:id,label:`Scanning plugins…`,current:completed,total:ids.length});
         await this.saveSettings();
         await this.addActivity(`Scanned ${record.name} (${completed}/${ids.length}).`, 'info');
       }
@@ -170,7 +193,7 @@ class UniversalObsidianPluginTranslator extends Plugin {
       throw error;
     } finally {
       this.busy = false;
-      if (this.settingsTab) this.settingsTab.requestRefresh();
+      this.clearOperation();
     }
   }
 
@@ -221,11 +244,13 @@ class UniversalObsidianPluginTranslator extends Plugin {
   async runTranslatePlugin(pluginId) {
     if (this.busy) return;
     this.busy = true;
+    const plugin = this.settings.plugins[pluginId];
+    this.setOperation({kind:'translate',pluginId,label:`Translating ${plugin && plugin.name || pluginId}…`});
     try {
       return await this.translatePluginInternal(pluginId);
     } finally {
       this.busy = false;
-      if (this.settingsTab) this.settingsTab.requestRefresh();
+      this.clearOperation();
     }
   }
 
@@ -240,12 +265,18 @@ class UniversalObsidianPluginTranslator extends Plugin {
       return {translatedFiles:0,translatedStrings:0,errors:[]};
     }
     const label = onlyFiles && onlyFiles.length === 1 ? `${plugin.name} / ${onlyFiles[0]}` : plugin.name;
+    this.setOperation({kind:'translate',pluginId,label:`${options.retry ? 'Retrying' : 'Translating'} ${label}…`,file:null,batch:null,totalBatches:null});
     await this.addActivity(`${options.retry ? 'Retrying' : 'Translating'} ${label}: ${eligible.length} approved file(s).`, 'action');
     await this.enrichContextForTranslation(pluginId);
     const provider = this.providerFromSettings();
     const result = await this.service.translatePlugin(pluginId, provider, {
       onlyFiles,
       onBatch: async ({file,batch,total,items}) => {
+        this.setOperation({
+          kind:'translate',pluginId,file,batch,totalBatches:total,
+          candidateCount:Array.isArray(items) ? items.length : null,
+          label:`Translating ${plugin.name} / ${file}…`
+        });
         await this.addActivity(`${plugin.name} / ${file}: translation batch ${batch}/${total}.`, 'info', {
           pluginId, file, provider:provider.providerName || null, model:provider.model || null,
           batch, totalBatches:total, candidateCount:Array.isArray(items) ? items.length : null
@@ -269,8 +300,9 @@ class UniversalObsidianPluginTranslator extends Plugin {
   async runRetryFile(pluginId, filePath) {
     if (this.busy) return;
     this.busy = true;
+    const plugin = this.settings.plugins[pluginId];
+    this.setOperation({kind:'translate',pluginId,file:filePath,label:`Retrying ${plugin && plugin.name || pluginId} / ${filePath}…`});
     try {
-      const plugin = this.settings.plugins[pluginId];
       const file = plugin && plugin.files && plugin.files[filePath];
       if (!plugin || !file) throw new Error('The selected plugin file is no longer available');
       if (!file.approved) throw new Error('Approve this file before retrying it');
@@ -289,7 +321,7 @@ class UniversalObsidianPluginTranslator extends Plugin {
       throw error;
     } finally {
       this.busy = false;
-      if (this.settingsTab) this.settingsTab.requestRefresh();
+      this.clearOperation();
     }
   }
 
@@ -303,11 +335,13 @@ class UniversalObsidianPluginTranslator extends Plugin {
         .sort((a,b)=>String(a.name).localeCompare(String(b.name)));
       let processed = 0;
       let skipped = 0;
+      this.setOperation({kind:'translate',label:'Translating approved plugins…',current:0,total:plugins.length});
       for (const plugin of plugins) {
         if (!this.service.eligibleFiles(plugin.id).length) {
           skipped++;
           continue;
         }
+        this.setOperation({kind:'translate',pluginId:plugin.id,label:`Translating ${plugin.name}…`,current:processed,total:plugins.length});
         await this.translatePluginInternal(plugin.id);
         processed++;
         await this.saveSettings();
@@ -321,7 +355,7 @@ class UniversalObsidianPluginTranslator extends Plugin {
       throw error;
     } finally {
       this.busy = false;
-      if (this.settingsTab) this.settingsTab.requestRefresh();
+      this.clearOperation();
     }
   }
 }
