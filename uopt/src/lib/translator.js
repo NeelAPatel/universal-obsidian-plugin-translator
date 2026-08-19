@@ -100,7 +100,8 @@ async function translateSource({ source, candidates, pluginContext, provider, ma
   const eligible = candidates.filter(c => !c.protected && !translations.has(c.id));
   const configuredBudget = Math.max(0, Number(maxBatchChars) || 0);
   const providerBudget = Math.max(0, Number(provider && provider.recommendedBatchChars) || 0);
-  const effectiveBatchChars = Math.max(configuredBudget, providerBudget, 14000);
+  const baseBudget = configuredBudget || 14000;
+  const effectiveBatchChars = providerBudget ? Math.max(baseBudget, providerBudget) : baseBudget;
   const batches = batchCandidates(eligible, effectiveBatchChars, source);
   for (let i = 0; i < batches.length; i++) {
     if (onBatch) await onBatch(i + 1, batches.length, batches[i]);
