@@ -37,7 +37,6 @@ function localeResourceInfo(relativePath) {
   return {dir:path.posix.dirname(normalized), token, ext};
 }
 
-
 const LANGUAGE_HEADING_RE = /^(?:#{1,6}\s*)?(english|简体中文|繁體中文|繁体中文|中文|日本語|한국어|русский|español|français|deutsch|português|italiano)\s*$/i;
 
 function hasMultilingualDocSections(relativePath, content) {
@@ -168,6 +167,7 @@ async function scanPluginDirectory({ pluginDir, pluginId, previous, maxFileBytes
       originalSnapshot:prev && prev.originalSnapshot || null,
       translatedSnapshot:prev && prev.translatedSnapshot || null,
       translationMemory:prev && Array.isArray(prev.translationMemory) ? prev.translationMemory : [],
+      translationMemoryVersion:prev && prev.translationMemoryVersion || null,
       lastTranslated:prev && prev.lastTranslated || null,
       lastError:hasForeign && !ignoredReason && prev && prev.lastError || null,
       lastFailure:hasForeign && !ignoredReason && prev && prev.lastFailure || null,
