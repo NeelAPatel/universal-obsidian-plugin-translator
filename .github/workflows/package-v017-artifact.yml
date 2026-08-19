@@ -1,0 +1,37 @@
+name: Package v0.1.7 artifact
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: uopt
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: uopt/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Verify
+        run: npm run verify
+      - name: Package
+        run: |
+          npm run package
+          (cd dist && zip -r uopt.zip uopt)
+      - name: Upload install ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: UOPT-v0.1.7-install
+          path: uopt/dist/uopt.zip
+          if-no-files-found: error
