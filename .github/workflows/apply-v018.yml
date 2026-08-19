@@ -16,6 +16,11 @@ jobs:
           node-version: 22
       - name: Apply source migration
         run: node .github/apply-v018.cjs
+      - name: Repair generated migration markers
+        run: node .github/fix-v018-generated.cjs
+      - name: Check generated source syntax
+        working-directory: uopt
+        run: npm run check
       - name: Run full tests after migration
         working-directory: uopt
         run: npm test
