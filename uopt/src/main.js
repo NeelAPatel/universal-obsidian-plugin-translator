@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const fs = require('node:fs/promises');
 const {
   Plugin,
   Notice,
@@ -11,6 +12,7 @@ const { UoptService, defaultState } = require('./lib/service');
 const { OpenAIProvider, OllamaProvider } = require('./lib/providers');
 const { buildContextMemo, findRepositoryFromCommunityIndex, clampText } = require('./lib/context');
 const { UoptSettingTab } = require('./lib/settings-tab');
+const { TranslationRunLogger } = require('./lib/run-logger');
 
 const COMMUNITY_INDEX_URL = 'https://raw.githubusercontent.com/obsidianmd/obsidian-releases/master/community-plugins.json';
 
@@ -43,6 +45,7 @@ class UniversalObsidianPluginTranslator extends Plugin {
     const configDirParts = String(this.app.vault.configDir || '.obsidian').split('/').filter(Boolean);
     this.pluginsRoot = path.join(vaultBase, ...configDirParts, 'plugins');
     this.snapshotRoot = path.join(this.pluginsRoot, this.manifest.id, 'snapshots');
+    this.logRoot = path.join(this.pluginsRoot, this.manifest.id, 'logs');
     this.service = new UoptService({
       pluginsRoot:this.pluginsRoot,
       selfId:this.manifest.id,
@@ -137,9 +140,79 @@ class UniversalObsidianPluginTranslator extends Plugin {
       detail.textContent = `${operation.current} / ${operation.total}`;
       host.appendChild(detail);
     }
+    if (operation.attempt) {
+      const attempt = document.createElement('div');
+      attempt.className = 'uopt-operation-attempt';
+      const accepted = operation.accepted == null ? '—' : operation.accepted;
+      const unresolved = operation.unresolved == null ? '—' : operation.unresolved;
+      attempt.textContent = `Attempt ${operation.attempt} / ${operation.maxAttempts || operation.attempt} · accepted ${accepted} · unresolved ${unresolved}`;
+      host.appendChild(attempt);
+      const telemetry = operation.telemetry;
+      if (telemetry) {
+        const timing = document.createElement('div');
+        timing.className = 'uopt-small';
+        const seconds = Number(telemetry.totalDurationNs || 0) / 1e9;
+        timing.textContent = `Ollama: ${seconds ? seconds.toFixed(1)+'s · ' : ''}${telemetry.promptEvalCount || 0} prompt tokens · ${telemetry.evalCount || 0} output tokens`;
+        host.appendChild(timing);
+      }
+    }
+    if (operation.runId || operation.logPath) {
+      const logMeta = document.createElement('div');
+      logMeta.className = 'uopt-operation-log';
+      if (operation.runId) { const id=document.createElement('div'); id.className='uopt-small'; id.textContent=`Run ${operation.runId}`; logMeta.appendChild(id); }
+      if (operation.logPath) {
+        const pathLine=document.createElement('div'); pathLine.className='uopt-small uopt-log-path'; pathLine.textContent=operation.logPath; logMeta.appendChild(pathLine);
+        const actions=document.createElement('div'); actions.className='uopt-actions uopt-operation-log-actions';
+        const open=document.createElement('button'); open.type='button'; open.className='uopt-button uopt-button-small'; open.textContent='Open log folder'; open.addEventListener('click',event=>{event.stopPropagation();void this.openLogFolder(operation.logPath);});
+        const copy=document.createElement('button'); copy.type='button'; copy.className='uopt-button uopt-button-small'; copy.textContent='Copy log path'; copy.addEventListener('click',event=>{event.stopPropagation();void this.copyText(operation.logPath);});
+        actions.appendChild(open);actions.appendChild(copy);logMeta.appendChild(actions);
+      }
+      host.appendChild(logMeta);
+    }
     const anchor = body.querySelector && body.querySelector('.uopt-actions');
     if (anchor && anchor.parentNode === body) body.insertBefore(host,anchor);
     else body.prepend(host);
+  }
+
+  async openLogFolder(targetPath=null) {
+    const target = targetPath || this.logRoot;
+    await fs.mkdir(target,{recursive:true});
+    try {
+      const { shell } = require('electron');
+      const message = await shell.openPath(target);
+      if (message) throw new Error(message);
+    } catch (error) {
+      this.notify(`Could not open log folder: ${error && error.message ? error.message : error}`,8000);
+      throw error;
+    }
+  }
+
+  async copyText(text) {
+    const value=String(text || '');
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(value);
+      this.notify('Copied to clipboard.');
+      return;
+    }
+    throw new Error('Clipboard API is unavailable');
+  }
+
+  async clearLogs() {
+    if (this.busy) throw new Error('Wait for the current UOPT operation to finish before clearing logs');
+    await fs.rm(this.logRoot,{recursive:true,force:true});
+    await fs.mkdir(this.logRoot,{recursive:true});
+    await this.addActivity('Cleared translation logs.','info');
+    this.notify('UOPT translation logs cleared.');
+  }
+
+  async createRunLogger(plugin, provider, label) {
+    const logger = new TranslationRunLogger({baseDir:this.logRoot,maxRuns:20,maxBytes:250*1024*1024});
+    await logger.start({
+      pluginId:plugin.id,pluginName:plugin.name,pluginVersion:plugin.version,
+      provider:provider.providerName || this.settings.provider,model:provider.model || '',label,
+      appVersion:this.app && this.app.appVersion || null,uoptVersion:this.manifest.version
+    });
+    return logger;
   }
 
   async saveSettings() {
@@ -334,35 +407,43 @@ class UniversalObsidianPluginTranslator extends Plugin {
       return {translatedFiles:0,translatedStrings:0,errors:[]};
     }
     const label = onlyFiles && onlyFiles.length === 1 ? `${plugin.name} / ${onlyFiles[0]}` : plugin.name;
-    this.setOperation({kind:'translate',pluginId,label:`${options.retry ? 'Retrying' : 'Translating'} ${label}…`,file:null,batch:null,totalBatches:null});
     await this.addActivity(`${options.retry ? 'Retrying' : 'Translating'} ${label}: ${eligible.length} approved file(s).`, 'action');
     await this.enrichContextForTranslation(pluginId);
     const provider = this.providerFromSettings();
-    const result = await this.service.translatePlugin(pluginId, provider, {
-      onlyFiles,
-      onBatch: async ({file,batch,total,items}) => {
-        this.setOperation({
-          kind:'translate',pluginId,file,batch,totalBatches:total,
-          candidateCount:Array.isArray(items) ? items.length : null,
-          label:`Translating ${plugin.name} / ${file}…`
-        });
-        await this.addActivity(`${plugin.name} / ${file}: translation batch ${batch}/${total}.`, 'info', {
-          pluginId, file, provider:provider.providerName || null, model:provider.model || null,
-          batch, totalBatches:total, candidateCount:Array.isArray(items) ? items.length : null
-        });
-      }
-    });
+    const runLogger = await this.createRunLogger(plugin,provider,label);
+    provider.runLogger = runLogger;
+    const runMeta={runId:runLogger.runId,logPath:runLogger.runDir};
+    this.setOperation({kind:'translate',pluginId,label:`${options.retry ? 'Retrying' : 'Translating'} ${label}…`,file:null,batch:null,totalBatches:null,...runMeta});
+    await this.addActivity(`${plugin.name}: full translation log started (${runLogger.runId}).`, 'info', {pluginId,runId:runLogger.runId,logPath:runLogger.runDir,provider:provider.providerName,model:provider.model});
+    let result;
+    try {
+      result = await this.service.translatePlugin(pluginId, provider, {
+        onlyFiles,runLogger,
+        onBatch: async ({file,batch,total,items}) => {
+          this.setOperation({kind:'translate',pluginId,file,batch,totalBatches:total,candidateCount:Array.isArray(items)?items.length:null,label:`Translating ${plugin.name} / ${file}…`,...runMeta,attempt:null,accepted:null,unresolved:null,telemetry:null});
+          await this.addActivity(`${plugin.name} / ${file}: translation batch ${batch}/${total}.`, 'info', {pluginId,file,provider:provider.providerName||null,model:provider.model||null,batch,totalBatches:total,candidateCount:Array.isArray(items)?items.length:null,runId:runLogger.runId,logPath:runLogger.runDir});
+        },
+        onAttempt: async info => {
+          this.setOperation({kind:'translate',pluginId,file:info.file,batch:info.batch,totalBatches:info.totalBatches,candidateCount:info.candidateCount,label:`Translating ${plugin.name} / ${info.file}…`,attempt:info.attempt,maxAttempts:info.maxAttempts,accepted:info.accepted,unresolved:info.unresolved,telemetry:info.telemetry||null,...runMeta});
+        }
+      });
+      await runLogger.finish(result.errors.length?'failed':'success',{translatedFiles:result.translatedFiles,translatedStrings:result.translatedStrings,errorCount:result.errors.length});
+    } catch (error) {
+      await runLogger.finish('failed',{error:String(error&&error.message||error)});
+      throw error;
+    }
     await this.saveSettings();
     if (result.errors.length) {
       for (const failure of result.errors) {
-        const diagnostic = failure.diagnostic || {pluginId,file:failure.file,message:failure.error,category:'Unknown',stage:'Unknown'};
-        await this.addActivity(`${plugin.name} / ${failure.file}: ${diagnostic.category} — ${diagnostic.message}`, 'error', diagnostic);
+        const diagnostic=failure.diagnostic||{pluginId,file:failure.file,message:failure.error,category:'Unknown',stage:'Unknown'};
+        diagnostic.runId=diagnostic.runId||runLogger.runId; diagnostic.logPath=diagnostic.logPath||runLogger.runDir;
+        await this.addActivity(`${plugin.name} / ${failure.file}: ${diagnostic.category} — ${diagnostic.message}`,'error',diagnostic);
       }
-      await this.addActivity(`${plugin.name}: ${result.translatedFiles} file(s) translated; ${result.errors.length} failed. Expand the error entry for exact diagnostics.`, 'error');
+      await this.addActivity(`${plugin.name}: ${result.translatedFiles} file(s) translated; ${result.errors.length} failed. Full log: ${runLogger.runDir}`,'error',{pluginId,runId:runLogger.runId,logPath:runLogger.runDir});
     } else {
-      await this.addActivity(`${plugin.name}: translated ${result.translatedStrings} string(s) across ${result.translatedFiles} file(s).`, 'success');
+      await this.addActivity(`${plugin.name}: translated ${result.translatedStrings} string(s) across ${result.translatedFiles} file(s). Full log: ${runLogger.runDir}`,'success',{pluginId,runId:runLogger.runId,logPath:runLogger.runDir});
     }
-    this.notify(`${plugin.name}: translation ${result.errors.length ? 'finished with errors' : 'complete'}. Reload the plugin or Obsidian if its UI is already open.`, 7000);
+    this.notify(`${plugin.name}: translation ${result.errors.length?'finished with errors':'complete'}. Reload the plugin or Obsidian if its UI is already open.`,7000);
     return result;
   }
 

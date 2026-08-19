@@ -92,3 +92,14 @@
 .uopt-log-details>summary{cursor:pointer;color:var(--text-accent);font-size:var(--font-ui-small);user-select:none}
 .uopt-log-details[open]>summary{margin-bottom:6px}
 @media(max-width:620px){.uopt-diagnostic-grid{grid-template-columns:1fr}.uopt-diagnostic{margin-left:10px;margin-right:10px}}
+
+/* v0.1.7 translation transparency */
+.uopt-select-wrap{position:relative;display:block;width:100%}
+.uopt-select-wrap::after{content:'▾';position:absolute;right:11px;top:50%;transform:translateY(-52%);pointer-events:none;color:var(--text-muted);font-size:.9em}
+.uopt-select{appearance:none!important;-webkit-appearance:none!important;padding-right:34px!important;cursor:pointer;background:var(--background-primary)!important;border:1px solid var(--background-modifier-border)!important}
+.uopt-select:hover{border-color:var(--background-modifier-border-hover)!important}
+.uopt-log-settings{margin-top:14px;padding-top:12px;border-top:1px solid var(--background-modifier-border)}
+.uopt-log-path{font-family:var(--font-monospace);font-size:var(--font-ui-smaller);color:var(--text-muted);overflow-wrap:anywhere;margin:5px 0 8px}
+.uopt-operation-attempt{margin-top:7px;font-weight:600;color:var(--text-normal)}
+.uopt-operation-log{margin-top:8px;padding-top:8px;border-top:1px solid var(--background-modifier-border)}
+.uopt-operation-log-actions{margin-top:6px}

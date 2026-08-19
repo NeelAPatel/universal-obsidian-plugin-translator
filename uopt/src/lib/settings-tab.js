@@ -32,7 +32,7 @@ function input(parent, type, value, placeholder) {
   return i;
 }
 function select(parent, value, options) {
-  const s = el(parent,'select','uopt-input');
+  const s = el(parent,'select','uopt-input uopt-select');
   for (const [v,label] of options) {
     const o = document.createElement('option');
     o.value=v; o.textContent=label; s.appendChild(o);
@@ -67,7 +67,7 @@ function formatFailureForClipboard(failure) {
     ['Category',f.category], ['Stage',f.stage], ['Error',f.message], ['Plugin',f.pluginId], ['File',f.file],
     ['Provider',f.provider], ['Model',f.model],
     ['Batch',f.batch && f.totalBatches ? `${f.batch} / ${f.totalBatches}` : f.batch],
-    ['Candidates',f.candidateCount], ['Timestamp',f.timestamp]
+    ['Candidates',f.candidateCount], ['Run ID',f.runId], ['Log path',f.logPath], ['Timestamp',f.timestamp]
   ];
   return rows.filter(([,value]) => value !== null && value !== undefined && value !== '').map(([key,value]) => `${key}: ${value}`).join('\n');
 }
@@ -172,7 +172,8 @@ class UoptSettingTab extends PluginSettingTab {
 
     const fieldProvider = el(body,'label','uopt-field');
     el(fieldProvider,'span','uopt-label','Provider');
-    const provider = select(fieldProvider,this.plugin.settings.provider,[['openai','OpenAI'],['ollama','Ollama']]);
+    const providerWrap = el(fieldProvider,'div','uopt-select-wrap');
+    const provider = select(providerWrap,this.plugin.settings.provider,[['openai','OpenAI'],['ollama','Ollama']]);
 
     const openaiWrap = el(body,'div','uopt-provider-openai');
     const keyLabel = el(openaiWrap,'label','uopt-field');
@@ -219,6 +220,16 @@ class UoptSettingTab extends PluginSettingTab {
     });
     save.disabled = this.plugin.busy;
     test.disabled = this.plugin.busy;
+
+    const logBox=el(body,'div','uopt-log-settings');
+    el(logBox,'div','uopt-label','Translation logs');
+    el(logBox,'div','uopt-help','Full request/response logging is enabled. Logs are local-only; OpenAI authorization/API-key material is redacted. Retention: latest 20 runs or 250 MB.');
+    const logPath=el(logBox,'div','uopt-log-path',this.plugin.logRoot || ''); logPath.title=this.plugin.logRoot || '';
+    const logActions=el(logBox,'div','uopt-actions');
+    button(logActions,'Open logs folder','uopt-button uopt-button-small',async()=>{try{await this.plugin.openLogFolder();}catch(_){}});
+    button(logActions,'Copy logs path','uopt-button uopt-button-small',async()=>{try{await this.plugin.copyText(this.plugin.logRoot||'');}catch(_){}});
+    const clearLogs=button(logActions,'Clear logs','uopt-button uopt-button-small',async(_e,b)=>{b.disabled=true;try{await this.plugin.clearLogs();}catch(_){}finally{b.disabled=false;this.requestRefresh();}});
+    clearLogs.disabled=this.plugin.busy;
   }
 
   renderActivityCard(parent) {
@@ -258,7 +269,7 @@ class UoptSettingTab extends PluginSettingTab {
     const fields=[
       ['Stage',failure.stage],['Error',failure.message],['File',failure.file],['Provider',failure.provider],['Model',failure.model],
       ['Batch',failure.batch && failure.totalBatches ? `${failure.batch} / ${failure.totalBatches}` : failure.batch],
-      ['Candidates',failure.candidateCount],['Timestamp',failure.timestamp ? formatTime(failure.timestamp) : null]
+      ['Candidates',failure.candidateCount],['Run ID',failure.runId],['Log path',failure.logPath],['Timestamp',failure.timestamp ? formatTime(failure.timestamp) : null]
     ];
     for (const [key,value] of fields) {
       if (value === null || value === undefined || value === '') continue;
@@ -267,6 +278,7 @@ class UoptSettingTab extends PluginSettingTab {
     }
     const actions=el(host,'div','uopt-diagnostic-actions');
     button(actions,'Copy error','uopt-button uopt-button-small',async()=>this.copyFailure(failure));
+    if (failure.logPath) button(actions,'Open full log','uopt-button uopt-button-small',async()=>{try{await this.plugin.openLogFolder(failure.logPath);}catch(_){}});
     if (failure.pluginId && failure.file) {
       const retry=button(actions,'Retry file','uopt-button uopt-button-small',async(_e,b)=>{
         b.disabled=true;
