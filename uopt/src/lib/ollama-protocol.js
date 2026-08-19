@@ -52,6 +52,7 @@ function parseOllamaLineProtocol(text,candidates) {
   const decidedIds=new Set();
   const invalidLines=[];
   const records=new Map();
+  const taintedIds=new Set();
   const raw=String(text || '').trim();
   if (!raw) return {translations,skippedIds,decidedIds,unresolvedIds:new Set(allowedIds),invalidLines:['<empty response>']};
 
@@ -67,7 +68,16 @@ function parseOllamaLineProtocol(text,candidates) {
       if (working.startsWith(known+'\t')) { token=known; delimiterLength=known.length+1; break; }
       if (working.startsWith(known+'\\t')) { token=known; delimiterLength=known.length+2; break; }
     }
-    if (!token) { invalidLines.push(original); continue; }
+    if (!token) {
+      for (const known of protocolIds) {
+        if (working.startsWith(known)) {
+          taintedIds.add(tokenToId.get(known));
+          break;
+        }
+      }
+      invalidLines.push(original);
+      continue;
+    }
     const id=tokenToId.get(token);
     const encoded=working.slice(delimiterLength);
     if (!records.has(id)) records.set(id,[]);
@@ -77,7 +87,7 @@ function parseOllamaLineProtocol(text,candidates) {
   for (const candidate of candidates) {
     const id=candidate.id;
     const rows=records.get(id) || [];
-    if (rows.length !== 1) {
+    if (taintedIds.has(id) || rows.length !== 1) {
       if (rows.length > 1) invalidLines.push(...rows.map(row=>row.original));
       continue;
     }
