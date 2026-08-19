@@ -95,10 +95,13 @@ function batchCandidates(candidates, maxChars = 14000, source = '') {
   return batches.length <= baselineBatches.length ? batches : baselineBatches;
 }
 
-async function translateSource({ source, candidates, pluginContext, provider, maxBatchChars = 14000, onBatch, seedTranslations = new Map() }) {
+async function translateSource({ source, candidates, pluginContext, provider, maxBatchChars = null, onBatch, onBatchComplete, seedTranslations = new Map() }) {
   const translations = new Map(seedTranslations);
   const eligible = candidates.filter(c => !c.protected && !translations.has(c.id));
-  const batches = batchCandidates(eligible, maxBatchChars, source);
+  const configuredBudget = Math.max(0, Number(maxBatchChars) || 0);
+  const providerBudget = Math.max(0, Number(provider && provider.recommendedBatchChars) || 0);
+  const effectiveBatchChars = Math.max(configuredBudget, providerBudget, 14000);
+  const batches = batchCandidates(eligible, effectiveBatchChars, source);
   for (let i = 0; i < batches.length; i++) {
     if (onBatch) await onBatch(i + 1, batches.length, batches[i]);
     let result;
@@ -116,6 +119,7 @@ async function translateSource({ source, candidates, pluginContext, provider, ma
       throw error;
     }
     for (const [id, value] of result.entries()) translations.set(id, value);
+    if (onBatchComplete) await onBatchComplete(i + 1, batches.length, batches[i], provider && provider.lastTelemetry || null);
   }
   return {
     content: applyTranslations(source, candidates, translations),
