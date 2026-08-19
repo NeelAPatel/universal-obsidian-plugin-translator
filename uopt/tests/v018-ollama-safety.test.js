@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { assignOllamaProtocolTokens, parseOllamaLineProtocol } = require('../src/lib/providers');
-const { batchCandidates } = require('../src/lib/translator');
+const { batchCandidates, translateSource } = require('../src/lib/translator');
 const { OLLAMA_BATCH_CHAR_BUDGET, OLLAMA_BATCH_MAX_CANDIDATES } = require('../src/lib/ollama-speed');
 const { memorySeed, shouldInvalidateTranslationMemory } = require('../src/lib/service');
 
@@ -48,6 +48,14 @@ test('duplicate records for one token are ambiguous and remain unresolved instea
   assert.ok(parsed.invalidLines.length>=2);
 });
 
+test('one valid record plus malformed reuse of the same known token is ambiguous and retried', () => {
+  const candidates=assignOllamaProtocolTokens([c('c0','通用',10)]);
+  const token=candidates[0].protocolId;
+  const parsed=parseOllamaLineProtocol(`${token}\tGeneral\n${token} malformed duplicate`,candidates);
+  assert.equal(parsed.translations.size,0);
+  assert.deepEqual([...parsed.unresolvedIds],['c0']);
+});
+
 test('unknown or invented protocol tokens can never satisfy a candidate', () => {
   const candidates=assignOllamaProtocolTokens([c('c0','通用',10)]);
   const parsed=parseOllamaLineProtocol('u_deadbeefdeadbeef\tGeneral',candidates);
@@ -62,6 +70,15 @@ test('Ollama batches obey both the character budget and a hard candidate-count c
   const batches=batchCandidates(items,OLLAMA_BATCH_CHAR_BUDGET,'',OLLAMA_BATCH_MAX_CANDIDATES);
   assert.ok(batches.length>=3);
   assert.ok(batches.every(batch=>batch.length<=48));
+});
+
+test('translate orchestration cannot raise an Ollama provider above its 24k safety ceiling', async() => {
+  const candidates=Array.from({length:30},(_,i)=>({id:`c${i}`,text:'字',start:i,end:i+1,kind:'js-string',context:'x'.repeat(1000),protected:false}));
+  const sizes=[];
+  const provider={recommendedBatchChars:24000,recommendedBatchCandidates:48,lastTelemetry:null,async translate(_ctx,batch){sizes.push(batch.length);return new Map();}};
+  await translateSource({source:'',candidates,pluginContext:{},provider,maxBatchChars:50000});
+  assert.ok(sizes.length>=2,'an explicit larger caller budget must not override the provider safety ceiling');
+  assert.ok(sizes.every(size=>size<=48));
 });
 
 test('provider-format failures invalidate persisted translation memory and prevent it from seeding another run', () => {
