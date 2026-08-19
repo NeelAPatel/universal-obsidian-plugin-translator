@@ -236,54 +236,15 @@ test('scan clears stale failure diagnostics when an upstream file no longer need
   assert.equal(service.state.plugins.demo.files['main.js'].lastError,null);
 });
 
-test('provider-format failure persists recovered translations as memory without partially writing the plugin file', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(),'uopt-service-'));
-  const pluginsRoot = path.join(root,'plugins');
-  const target = path.join(pluginsRoot,'canvas-enhance');
-  await fs.mkdir(target,{recursive:true});
-  await fs.writeFile(path.join(target,'manifest.json'), JSON.stringify({id:'canvas-enhance',name:'Canvas Enhance',version:'1.0.3'}));
-  const targetFile = path.join(target,'main.js');
-  const original = '// src/settings.ts\nnew Notice("保存");\nnew Notice("删除");';
-  await fs.writeFile(targetFile, original);
-  const service = new UoptService({pluginsRoot,selfId:'uopt',snapshotRoot:path.join(root,'snapshots'),state:defaultState()});
-  await service.scanPlugin('canvas-enhance');
-  service.state.plugins['canvas-enhance'].files['main.js'].approved = true;
-
-  let firstCall = true;
-  const failingProvider = {
-    providerName:'Ollama', model:'qwen3.5:9b',
-    async translate(_ctx,batch){
-      if (firstCall) {
-        firstCall = false;
-        const error = new Error('Ollama line protocol left 1 candidate(s) unresolved after 3 attempts');
-        error.uoptStage = 'provider';
-        error.uoptPartialTranslations = new Map([[batch[0].id,'Save']]);
-        error.uoptUnresolvedIds = [batch[1].id];
-        throw error;
-      }
-      return new Map();
-    }
-  };
-  const failed = await service.translatePlugin('canvas-enhance',failingProvider);
-  assert.equal(failed.translatedFiles,0);
-  assert.equal(await fs.readFile(targetFile,'utf8'),original);
-  const record = service.state.plugins['canvas-enhance'].files['main.js'];
-  assert.equal(record.translationMemory.length,1);
-  assert.equal(record.translationMemory[0].source,'保存');
-  assert.equal(record.translationMemory[0].translation,'Save');
-  assert.equal(record.lastFailure.category,'Provider format');
-
-  let retryBatch = null;
-  const retryProvider = {
-    providerName:'Ollama', model:'qwen3.5:9b',
-    async translate(_ctx,batch){
-      retryBatch = batch;
-      return new Map([[batch[0].id,'Delete']]);
-    }
-  };
-  const retry = await service.translatePlugin('canvas-enhance',retryProvider,{onlyFiles:['main.js']});
-  assert.equal(retry.translatedFiles,1);
-  assert.equal(retryBatch.length,1);
-  assert.equal(retryBatch[0].text,'删除');
+test('provider-format failure never persists recovered translations and retry starts from a clean file', async () => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'uopt-service-')); const pluginsRoot=path.join(root,'plugins'); const target=path.join(pluginsRoot,'canvas-enhance');
+  await fs.mkdir(target,{recursive:true}); await fs.writeFile(path.join(target,'manifest.json'),JSON.stringify({id:'canvas-enhance',name:'Canvas Enhance',version:'1.0.3'}));
+  const targetFile=path.join(target,'main.js'); const original='// src/settings.ts\nnew Notice("保存");\nnew Notice("删除");'; await fs.writeFile(targetFile,original);
+  const service=new UoptService({pluginsRoot,selfId:'uopt',snapshotRoot:path.join(root,'snapshots'),state:defaultState()}); await service.scanPlugin('canvas-enhance'); service.state.plugins['canvas-enhance'].files['main.js'].approved=true;
+  const failingProvider={providerName:'Ollama',model:'qwen3.5:9b',async translate(_ctx,batch){const error=new Error('Ollama line protocol left 1 candidate(s) unresolved after 3 attempts'); error.uoptStage='provider'; error.uoptPartialTranslations=new Map([[batch[0].id,'Save']]); error.uoptUnresolvedIds=[batch[1].id]; throw error;}};
+  const failed=await service.translatePlugin('canvas-enhance',failingProvider); assert.equal(failed.translatedFiles,0); assert.equal(await fs.readFile(targetFile,'utf8'),original);
+  const record=service.state.plugins['canvas-enhance'].files['main.js']; assert.equal(record.translationMemory.length,0); assert.equal(record.lastFailure.category,'Provider format');
+  let retryBatch=null; const retryProvider={providerName:'Ollama',model:'qwen3.5:9b',async translate(_ctx,batch){retryBatch=batch; return new Map(batch.map(c=>[c.id,c.text==='保存'?'Save':'Delete']));}};
+  const retry=await service.translatePlugin('canvas-enhance',retryProvider,{onlyFiles:['main.js']}); assert.equal(retry.translatedFiles,1); assert.equal(retryBatch.length,2);
   assert.equal(await fs.readFile(targetFile,'utf8'),'// src/settings.ts\nnew Notice("Save");\nnew Notice("Delete");');
 });

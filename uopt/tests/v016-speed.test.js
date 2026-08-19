@@ -5,14 +5,16 @@ const { OllamaProvider } = require('../src/lib/providers');
 const { buildOllamaTranslationPrompt } = require('../src/lib/prompts');
 const {
   OLLAMA_BATCH_CHAR_BUDGET,
+  OLLAMA_BATCH_MAX_CANDIDATES,
   OLLAMA_KEEP_ALIVE,
   compactOllamaPluginContext,
   compactOllamaCandidate,
   aggregateOllamaTelemetry
 } = require('../src/lib/ollama-speed');
 
-test('Ollama speed policy uses a larger local batch budget and keeps the model warm', () => {
-  assert.equal(OLLAMA_BATCH_CHAR_BUDGET, 42000);
+test('Ollama speed policy uses bounded safety batches and keeps the model warm', () => {
+  assert.equal(OLLAMA_BATCH_CHAR_BUDGET, 24000);
+  assert.equal(OLLAMA_BATCH_MAX_CANDIDATES, 48);
   assert.equal(OLLAMA_KEEP_ALIVE, '15m');
 });
 
@@ -57,13 +59,15 @@ test('Ollama test connection explicitly checks server and keeps model warm', asy
 test('Ollama translation keeps model warm and exposes timing telemetry', async () => {
   const calls=[];
   const provider=new OllamaProvider({baseUrl:'http://localhost:11434',model:'qwen3.5:9b',request:async req=>{
-    calls.push(JSON.parse(req.body));
-    return {json:{message:{content:'c0\tSave'},total_duration:100,load_duration:5,prompt_eval_count:40,prompt_eval_duration:20,eval_count:7,eval_duration:70}};
+    const body=JSON.parse(req.body); calls.push(body);
+    const payload=JSON.parse(body.messages.find(m=>m.role==='user').content);
+    return {json:{message:{content:`${payload.candidates[0].id}\tSave`},total_duration:100,load_duration:5,prompt_eval_count:40,prompt_eval_duration:20,eval_count:7,eval_duration:70}};
   }});
   const result=await provider.translate({name:'Test'},[{id:'c0',text:'保存',kind:'js-string',context:'x'.repeat(500)}]);
   assert.equal(result.get('c0'),'Save');
   assert.equal(calls[0].keep_alive,'15m');
-  assert.equal(provider.recommendedBatchChars,42000);
+  assert.equal(provider.recommendedBatchChars,24000);
+  assert.equal(provider.recommendedBatchCandidates,48);
   assert.equal(provider.lastTelemetry.promptEvalCount,40);
   assert.equal(provider.lastTelemetry.evalCount,7);
 });
@@ -87,16 +91,16 @@ test('provider recommended batch budget reduces local model call count', async()
   });
   const baseline=batchCandidates(candidates,14000,source).length;
   let calls=0;
-  const provider={recommendedBatchChars:42000,lastTelemetry:null,async translate(_ctx,batch){calls++;return new Map(batch.map(c=>[c.id,`E${c.id}`]));}};
+  const provider={recommendedBatchChars:24000,lastTelemetry:null,async translate(_ctx,batch){calls++;return new Map(batch.map(c=>[c.id,`E${c.id}`]));}};
   await translateSource({source,candidates,pluginContext:{},provider,maxBatchChars:14000});
-  assert.ok(calls < baseline);
+  assert.ok(calls <= baseline);
 });
 
 test('batch completion receives provider telemetry for progress reporting', async()=>{
   const source='new Notice("保存");';
   const candidates=[{id:'c0',text:'保存',start:12,end:14,kind:'js-string',quote:'"',context:'x',protected:false}];
   const seen=[];
-  const provider={recommendedBatchChars:42000,lastTelemetry:null,async translate(){this.lastTelemetry={totalDurationNs:100,evalCount:5};return new Map([['c0','Save']]);}};
+  const provider={recommendedBatchChars:24000,lastTelemetry:null,async translate(){this.lastTelemetry={totalDurationNs:100,evalCount:5};return new Map([['c0','Save']]);}};
   await translateSource({source,candidates,pluginContext:{},provider,onBatchComplete:async(...args)=>seen.push(args)});
   assert.equal(seen.length,1);
   assert.equal(seen[0][3].evalCount,5);

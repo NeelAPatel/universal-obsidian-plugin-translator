@@ -1,3 +1,29 @@
 'use strict';
-const test=require('node:test');const assert=require('node:assert/strict');const {OllamaProvider}=require('../src/lib/providers');
-test('Ollama logs and reports each protocol attempt',async()=>{const calls=[],progress=[];const logger={recordAttemptRequest:async(c,r)=>calls.push(['request',c,r]),recordAttemptResponse:async(c,r)=>calls.push(['response',c,r])};let n=0;const p=new OllamaProvider({baseUrl:'http://localhost:11434',model:'qwen3.5:9b',maxProtocolAttempts:2,runLogger:logger,request:async()=>({json:{message:{content:++n===1?'garbage':'c1\tGeneral'},prompt_eval_count:10,eval_count:5,total_duration:100}})});const result=await p.translate({},[{id:'c1',text:'通用'}],{file:'main.js',batch:2,totalBatches:4,onAttempt:i=>progress.push(i)});assert.equal(result.get('c1'),'General');assert.equal(calls.filter(x=>x[0]==='request').length,2);assert.equal(calls.filter(x=>x[0]==='response').length,2);assert.equal(calls.find(x=>x[0]==='response')[2].parse.unresolved,1);assert.equal(progress.at(-1).unresolved,0);});
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const {OllamaProvider}=require('../src/lib/providers');
+
+test('Ollama logs and reports each protocol attempt',async()=>{
+  const calls=[];
+  const progress=[];
+  const logger={
+    recordAttemptRequest:async(c,r)=>calls.push(['request',c,r]),
+    recordAttemptResponse:async(c,r)=>calls.push(['response',c,r])
+  };
+  let n=0;
+  const p=new OllamaProvider({
+    baseUrl:'http://localhost:11434',model:'qwen3.5:9b',maxProtocolAttempts:2,runLogger:logger,
+    request:async req=>{
+      const body=JSON.parse(req.body);
+      const payload=JSON.parse(body.messages.find(m=>m.role==='user').content);
+      const token=payload.candidates[0].id;
+      return {json:{message:{content:++n===1?'garbage':`${token}\tGeneral`},prompt_eval_count:10,eval_count:5,total_duration:100}};
+    }
+  });
+  const result=await p.translate({},[{id:'c1',text:'通用'}],{file:'main.js',batch:2,totalBatches:4,onAttempt:i=>progress.push(i)});
+  assert.equal(result.get('c1'),'General');
+  assert.equal(calls.filter(x=>x[0]==='request').length,2);
+  assert.equal(calls.filter(x=>x[0]==='response').length,2);
+  assert.equal(calls.find(x=>x[0]==='response')[2].parse.unresolved,1);
+  assert.equal(progress.at(-1).unresolved,0);
+});

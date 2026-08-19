@@ -10,6 +10,17 @@ const { SnapshotStore } = require('./snapshots');
 const { sha256 } = require('./hash');
 const { createFailureDiagnostic } = require('./diagnostics');
 
+const TRANSLATION_MEMORY_VERSION = 2;
+
+async function safeRunLog(logger, method, ...args) {
+  if (!logger || typeof logger[method] !== 'function') return;
+  try {
+    await logger[method](...args);
+  } catch (error) {
+    logger.lastError = error && error.message ? error.message : String(error);
+  }
+}
+
 function defaultState() {
   return {
     provider:'openai',
@@ -20,6 +31,20 @@ function defaultState() {
     plugins:{},
     activity:[]
   };
+}
+
+function shouldInvalidateTranslationMemory(file) {
+  if (!file) return false;
+  if (file.lastFailure && file.lastFailure.category === 'Provider format') return true;
+  const hasMemory = Array.isArray(file.translationMemory) && file.translationMemory.length > 0;
+  return hasMemory && Number(file.translationMemoryVersion || 0) !== TRANSLATION_MEMORY_VERSION;
+}
+
+function invalidateTranslationMemoryIfNeeded(file) {
+  if (!shouldInvalidateTranslationMemory(file)) return false;
+  file.translationMemory = [];
+  file.translationMemoryVersion = TRANSLATION_MEMORY_VERSION;
+  return true;
 }
 
 function memoryKey(source, candidate) {
@@ -116,6 +141,7 @@ class UoptService {
     const previous = this.state.plugins[pluginId];
     const result = await scanPluginDirectory({pluginDir, pluginId, previous});
     const files = Object.fromEntries(result.files.map(f => [f.path, f]));
+    for (const file of Object.values(files)) invalidateTranslationMemoryIfNeeded(file);
     const localDocs = await collectLocalDocs(pluginDir);
     let repoInfo = null;
     if (this.repositoryContextFetcher) {
@@ -211,10 +237,8 @@ class UoptService {
           throw error;
         }
         candidates = extractCandidates(file.path, source);
-        if (options.runLogger) {
-          await options.runLogger.writeCandidates(file.path, candidates, {sourceHash,candidateCount:candidates.length,fileIndex:fileIndex+1,fileTotal:targetFiles.length});
-          await options.runLogger.appendEvent('file_started',{pluginId,file:file.path,sourceHash,candidateCount:candidates.length,fileIndex:fileIndex+1,fileTotal:targetFiles.length});
-        }
+        await safeRunLog(options.runLogger,'writeCandidates',file.path,candidates,{sourceHash,candidateCount:candidates.length,fileIndex:fileIndex+1,fileTotal:targetFiles.length});
+        await safeRunLog(options.runLogger,'appendEvent','file_started',{pluginId,file:file.path,sourceHash,candidateCount:candidates.length,fileIndex:fileIndex+1,fileTotal:targetFiles.length});
         let originalSnapshot;
         try {
           originalSnapshot = await this.snapshotStore.save(pluginId, file.path, 'original', sourceHash, source);
@@ -222,6 +246,7 @@ class UoptService {
           error.uoptStage = 'filesystem';
           throw error;
         }
+        invalidateTranslationMemoryIfNeeded(file);
         const seedTranslations = memorySeed(source, candidates, file.translationMemory);
         const result = await translateSource({
           source,
@@ -230,17 +255,18 @@ class UoptService {
           provider,
           filePath:file.path,
           seedTranslations,
-          maxBatchChars:options.maxBatchChars || 14000,
+          maxBatchChars:options.maxBatchChars || provider && provider.recommendedBatchChars || 14000,
+          maxBatchCandidates:options.maxBatchCandidates || provider && provider.recommendedBatchCandidates || null,
           onBatch: async (batch,total,items) => {
             currentBatch = {batch,totalBatches:total,candidateCount:items.length};
-            if (options.runLogger) await options.runLogger.appendEvent('batch_started',{pluginId,file:file.path,batch,totalBatches:total,candidateCount:items.length});
+            await safeRunLog(options.runLogger,'appendEvent','batch_started',{pluginId,file:file.path,batch,totalBatches:total,candidateCount:items.length});
             if (options.onBatch) await options.onBatch({pluginId,file:file.path,fileIndex:fileIndex+1,fileTotal:targetFiles.length,batch,total,items});
           },
           onAttempt: async info => {
             if (options.onAttempt) await options.onAttempt({pluginId,file:file.path,fileIndex:fileIndex+1,fileTotal:targetFiles.length,...info});
           },
           onBatchComplete: async (batch,total,items,telemetry) => {
-            if (options.runLogger) await options.runLogger.appendEvent('batch_complete',{pluginId,file:file.path,batch,totalBatches:total,candidateCount:items.length,telemetry});
+            await safeRunLog(options.runLogger,'appendEvent','batch_complete',{pluginId,file:file.path,batch,totalBatches:total,candidateCount:items.length,telemetry});
             if (options.onBatchComplete) await options.onBatchComplete({pluginId,file:file.path,batch,total,items,telemetry});
           }
         });
@@ -263,6 +289,13 @@ class UoptService {
           throw error;
         }
         const translatedHash = sha256(result.content);
+        let translatedSnapshot;
+        try {
+          translatedSnapshot = await this.snapshotStore.save(pluginId, file.path, 'translated', translatedHash, result.content);
+        } catch (error) {
+          error.uoptStage = 'filesystem';
+          throw error;
+        }
         if (result.content !== source) {
           const tempPath = `${absolute}.uopt-tmp-${process.pid}-${Date.now()}`;
           try {
@@ -274,13 +307,6 @@ class UoptService {
             throw writeError;
           }
         }
-        let translatedSnapshot;
-        try {
-          translatedSnapshot = await this.snapshotStore.save(pluginId, file.path, 'translated', translatedHash, result.content);
-        } catch (error) {
-          error.uoptStage = 'filesystem';
-          throw error;
-        }
         const translationMemory = translationMemoryEntries(source, candidates, result.translations);
         Object.assign(file, {
           originalHash:sourceHash,
@@ -288,6 +314,7 @@ class UoptService {
           originalSnapshot,
           translatedSnapshot,
           translationMemory,
+          translationMemoryVersion:TRANSLATION_MEMORY_VERSION,
           everTranslated:true,
           approved:true,
           state:'translated-current',
@@ -297,12 +324,8 @@ class UoptService {
         });
         translatedFiles++;
         translatedStrings += result.translatedCount;
-        if (options.runLogger) await options.runLogger.appendEvent('file_succeeded',{pluginId,file:file.path,translatedCount:result.translatedCount,translatedHash});
+        await safeRunLog(options.runLogger,'appendEvent','file_succeeded',{pluginId,file:file.path,translatedCount:result.translatedCount,translatedHash});
       } catch (error) {
-        if (source && candidates.length && error && error.uoptPartialTranslations instanceof Map) {
-          const recoveredMemory = translationMemoryEntries(source, candidates, error.uoptPartialTranslations);
-          if (recoveredMemory.length) file.translationMemory = mergeTranslationMemory(file.translationMemory, recoveredMemory);
-        }
         const failureStage = error && error.uoptStage;
         const batchMeta = failureStage === 'provider' ? (error && error.uoptBatch || currentBatch || {}) : {};
         const diagnostic = createFailureDiagnostic(error, {
@@ -318,7 +341,7 @@ class UoptService {
         if (options.runLogger) {
           diagnostic.runId = options.runLogger.runId;
           diagnostic.logPath = options.runLogger.runDir;
-          await options.runLogger.appendEvent('file_failed',{...diagnostic});
+          await safeRunLog(options.runLogger,'appendEvent','file_failed',{...diagnostic});
         }
         file.lastError = diagnostic.message;
         file.lastFailure = diagnostic;
@@ -333,4 +356,7 @@ class UoptService {
   }
 }
 
-module.exports = { UoptService, defaultState, memoryKey, memorySeed, translationMemoryEntries, mergeTranslationMemory };
+module.exports = {
+  UoptService, defaultState, memoryKey, memorySeed, translationMemoryEntries, mergeTranslationMemory,
+  shouldInvalidateTranslationMemory, invalidateTranslationMemoryIfNeeded, TRANSLATION_MEMORY_VERSION, safeRunLog
+};

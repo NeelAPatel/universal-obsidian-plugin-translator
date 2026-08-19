@@ -47,6 +47,7 @@ class TranslationRunLogger {
     this.runId = null;
     this.runDir = null;
     this.meta = null;
+    this.lastError = null;
   }
 
   async start(meta={}) {
@@ -113,10 +114,14 @@ class TranslationRunLogger {
 
   async finish(status,summary={}) {
     if (!this.runDir) return;
-    const finishedAt=this.now().toISOString();
-    await this.writeRun({status,finishedAt,summary});
-    await this.appendEvent('run_finished',{status,summary});
-    await this.pruneRetention();
+    try {
+      const finishedAt=this.now().toISOString();
+      await this.writeRun({status,finishedAt,summary});
+      await this.appendEvent('run_finished',{status,summary});
+      await this.pruneRetention();
+    } catch (error) {
+      this.lastError = error && error.message ? error.message : String(error);
+    }
   }
 
   async pruneRetention() {
